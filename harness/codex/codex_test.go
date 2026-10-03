@@ -1,0 +1,192 @@
+package codex
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/orka-agents/sessionkit/internal/budget"
+	"github.com/orka-agents/sessionkit/internal/model"
+)
+
+const testThread = "0195e76b-7c5e-7123-8123-456789abcdef"
+const otherThread = "0195e76b-7c5e-7123-8123-456789abcdee"
+const testPath = "sessions/2025/03/31/rollout-2025-04-01T00-30-00-" + testThread + ".jsonl"
+
+func meta() map[string]any {
+	return map[string]any{"id": testThread, "cli_version": "0.160.0", "history_mode": "paginated", "history_base": nil, "cwd": "/source/work", "source": "exec", "model_provider": "stub", "runtime_workspace_roots": []string{"/source/work"}}
+}
+func line(t *testing.T, ordinal uint64, kind string, payload any) string {
+	t.Helper()
+	data, err := json.Marshal(map[string]any{"timestamp": "2025-04-01T00:30:00Z", "ordinal": ordinal, "type": kind, "payload": payload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data) + "\n"
+}
+func inspect(t *testing.T, data string) (model.Inspection, error) {
+	t.Helper()
+	return (Adapter{}).Inspect(context.Background(), strings.NewReader(data), testPath, budget.New(context.Background(), model.Budget{}))
+}
+
+func TestInspectionPreservesNumbersAndSummarizesOwnedSettings(t *testing.T) {
+	data := line(t, 0, "session_meta", meta()) +
+		line(t, 1, "response_item", map[string]any{"type": "function_call", "call_id": "call-1", "name": "shell", "arguments": `{"command":"echo nonce"}`}) +
+		line(t, 2, "response_item", map[string]any{"type": "function_call_output", "call_id": "call-1", "output": "nonce"}) +
+		line(t, 4, "event_msg", map[string]any{"type": "thread_settings_applied", "thread_id": testThread, "thread_settings": map[string]any{"cwd": "/new/work", "runtime_workspace_roots": []string{"/new/work"}, "model_provider_id": "new-provider"}}) +
+		line(t, 4, "event_msg", map[string]any{"type": "thread_settings_applied", "thread_id": otherThread, "thread_settings": map[string]any{"cwd": "/wrong/work"}}) +
+		line(t, 5, "response_item", map[string]any{"type": "future_item", "decimal": json.Number("1.234567890123456789")}) +
+		line(t, 9007199254740993, "future_record", map[string]any{"number": json.Number("9007199254740993")})
+	got, err := inspect(t, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Profile != model.CodexPaginated || got.ThreadID != testThread || got.CLIVersion != "0.160.0" || got.HistoryMode != "paginated" {
+		t.Fatalf("profile: %+v", got)
+	}
+	if got.RecordedCWD != "/source/work" || got.LatestCWD != "/new/work" || got.ModelProvider != "new-provider" || !reflect.DeepEqual(got.RuntimeWorkspaceRoots, []string{"/new/work"}) {
+		t.Fatalf("settings: %+v", got)
+	}
+	if got.Records.Total != 7 || got.Records.ToolPairs != 1 || got.Records.OrdinalGaps != 2 || got.Records.LastOrdinal != 9007199254740993 || got.Records.ResponseItems["future_item"] != 1 || got.Records.ByType["future_record"] != 1 {
+		t.Fatalf("records: %+v", got.Records)
+	}
+	digest := sha256.Sum256([]byte(data))
+	if got.SourceDigest != hex.EncodeToString(digest[:]) || got.SourceSizeBytes != int64(len(data)) {
+		t.Fatal("digest or byte count changed")
+	}
+	if !reflect.DeepEqual(got.Omitted, []string{"thread name", "git metadata", "memory mode"}) {
+		t.Fatalf("omissions: %+v", got.Omitted)
+	}
+}
+
+func TestProfileRejections(t *testing.T) {
+	cases := []struct {
+		name, code string
+		mutate     func(map[string]any)
+		suffix     string
+	}{
+		{name: "legacy", code: "history_mode", mutate: func(m map[string]any) { m["history_mode"] = "legacy" }},
+		{name: "unknown mode", code: "history_mode", mutate: func(m map[string]any) { m["history_mode"] = "future" }},
+		{name: "version", code: "cli_version", mutate: func(m map[string]any) { m["cli_version"] = "0.159.1" }},
+		{name: "mismatched ID", code: "thread_id", mutate: func(m map[string]any) { m["id"] = otherThread }},
+		{name: "history base", code: "lineage", mutate: func(m map[string]any) { m["history_base"] = map[string]any{"thread_id": otherThread} }},
+		{name: "fork", code: "lineage", mutate: func(m map[string]any) { m["forked_from_id"] = otherThread }},
+		{name: "fork ordinal zero", code: "lineage", mutate: func(m map[string]any) { m["forked_from_ordinal_exclusive"] = 0 }},
+		{name: "parent", code: "lineage", mutate: func(m map[string]any) { m["parent_thread_id"] = otherThread }},
+		{name: "subagent ordinal", code: "lineage", mutate: func(m map[string]any) { m["subagent_history_start_ordinal"] = 0 }},
+		{name: "subagent object", code: "subagent", mutate: func(m map[string]any) {
+			m["source"] = map[string]any{"subagent": map[string]any{"thread_spawn": map[string]any{"parent_thread_id": otherThread}}}
+		}},
+		{name: "subagent string", code: "subagent", mutate: func(m map[string]any) { m["source"] = "SubAgent" }},
+		{name: "second metadata", code: "session_meta", suffix: line(t, 1, "session_meta", meta())},
+		{name: "orphan output", code: "orphan_tool_output", suffix: line(t, 1, "response_item", map[string]any{"type": "function_call_output", "call_id": "absent", "output": "private body"})},
+		{name: "orphan call", code: "orphan_tool_call", suffix: line(t, 1, "response_item", map[string]any{"type": "custom_tool_call", "call_id": "absent", "input": "private body"})},
+		{name: "missing final ordinal", code: "ordinal", suffix: `{"type":"response_item","payload":{"type":"message"}}` + "\n"},
+		{name: "fractional ordinal", code: "ordinal", suffix: `{"ordinal":1.5,"type":"future_record"}` + "\n"},
+		{name: "duplicate", code: "duplicate_key", suffix: `{"ordinal":1,"type":"future_record","private key":0,"private key":1}` + "\n"},
+		{name: "truncated tail", code: "incomplete_tail", suffix: `{"ordinal":1`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			metadata := meta()
+			if tc.mutate != nil {
+				tc.mutate(metadata)
+			}
+			got, err := inspect(t, line(t, 0, "session_meta", metadata)+tc.suffix)
+			assertRejection(t, err, tc.code)
+			if len(got.Rejections) != 1 || got.Rejections[0].Code != tc.code {
+				t.Fatalf("inspection did not retain rejection: %+v", got.Rejections)
+			}
+			if strings.Contains(err.Error(), "private") {
+				t.Fatal("error exposed record content")
+			}
+		})
+	}
+	_, err := inspect(t, line(t, 2, "session_meta", meta())+line(t, 1, "future", nil))
+	assertRejection(t, err, "ordinal_order")
+}
+
+func TestCustomToolsCompactionAndWarnings(t *testing.T) {
+	metadata := meta()
+	metadata["git"] = map[string]any{"repository_url": "https://user:secret@example.test/repo"}
+	metadata["runtime_workspace_roots"] = []string{"/outside"}
+	data := line(t, 0, "session_meta", metadata) + line(t, 1, "response_item", map[string]any{"type": "custom_tool_call", "call_id": "custom", "input": "data"}) + line(t, 2, "response_item", map[string]any{"type": "custom_tool_call_output", "call_id": "custom", "output": "done"}) +
+		line(t, 3, "compacted", map[string]any{"replacement_history": []any{}, "window_number": 1, "encrypted_content": "secret"}) + line(t, 4, "compacted", map[string]any{"message": "partial"})
+	got, err := inspect(t, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Records.ToolPairs != 1 || got.Compaction.Count != 2 || got.Compaction.NewestComplete || got.Compaction.NewestCompleteBoundaryOrdinal == nil || *got.Compaction.NewestCompleteBoundaryOrdinal != 3 {
+		t.Fatalf("summary: %+v", got)
+	}
+	warnings := map[string]bool{}
+	for _, warning := range got.Warnings {
+		warnings[warning.Code] = true
+		if strings.Contains(warning.Message, "secret") {
+			t.Fatal("warning exposed secret")
+		}
+	}
+	for _, code := range []string{"repository_url_userinfo", "encrypted_content", "workspace_root_outside_cwd"} {
+		if !warnings[code] {
+			t.Fatalf("missing %s", code)
+		}
+	}
+}
+
+func TestPathsAndSelection(t *testing.T) {
+	for _, tc := range []struct{ path, code string }{
+		{strings.Replace(testPath, "sessions/", "archived_sessions/", 1), "archived"},
+		{testPath + ".zst", "compressed"},
+		{strings.TrimSuffix(testPath, ".jsonl") + "_" + otherThread + ".jsonl", "lineage"},
+		{"../" + testPath, "source_path"},
+		{strings.Replace(testPath, "2025/03/31", "2025/02/31", 1), "source_path"},
+	} {
+		t.Run(tc.code, func(t *testing.T) { _, err := ValidatePath(tc.path); assertRejection(t, err, tc.code) })
+	}
+	if id, err := ValidatePath(testPath); err != nil || id != testThread {
+		t.Fatalf("preserved local date path failed: %s %v", id, err)
+	}
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	write := func(relative string) {
+		t.Helper()
+		full := filepath.Join(home, filepath.FromSlash(relative))
+		if err := os.MkdirAll(filepath.Dir(full), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(line(t, 0, "session_meta", meta())), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(testPath)
+	src := model.Source{Harness: model.Codex, Root: home, ThreadID: testThread}
+	selected, err := (Adapter{}).Select(context.Background(), src, budget.New(context.Background(), model.Budget{}))
+	if err != nil || selected != testPath {
+		t.Fatalf("selection: %s %v", selected, err)
+	}
+	_, err = (Adapter{}).Select(context.Background(), src, budget.New(context.Background(), model.Budget{MaxNodes: 1}))
+	var exceeded *model.BudgetError
+	if !errors.As(err, &exceeded) {
+		t.Fatalf("selection budget: %v", err)
+	}
+	write(strings.Replace(testPath, "T00-30-00", "T00-30-01", 1))
+	_, err = (Adapter{}).Select(context.Background(), src, budget.New(context.Background(), model.Budget{}))
+	assertRejection(t, err, "duplicate_source")
+}
+
+func assertRejection(t *testing.T, err error, code string) {
+	t.Helper()
+	var rejected *model.RejectionError
+	if !errors.As(err, &rejected) || len(rejected.Rejections) == 0 || rejected.Rejections[0].Code != code {
+		t.Fatalf("want rejection %s, got %v", code, err)
+	}
+}
