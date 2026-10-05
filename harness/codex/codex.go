@@ -204,6 +204,9 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 		if !ok {
 			return fail(reject(relative, "ordinal", "every record must carry an unsigned integer ordinal", 0))
 		}
+		if _, ok := record["timestamp"].(string); !ok {
+			return fail(reject(relative, "timestamp", "every record must carry a string timestamp", ordinal))
+		}
 		if inspection.Records.Total > 0 && ordinal < inspection.Records.LastOrdinal {
 			return fail(reject(relative, "ordinal_order", "record ordinals must be non-decreasing", ordinal))
 		}
@@ -224,6 +227,8 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 		inspection.Records.Total++
 		inspection.Records.ByType[kind]++
 		switch kind {
+		case "inter_agent_communication", "inter_agent_communication_metadata":
+			return fail(reject(relative, "lineage", "inter-agent communication is not supported", ordinal))
 		case "session_meta":
 			if inspection.Records.Total != 1 {
 				return fail(reject(relative, "session_meta", "additional session_meta records are not supported", ordinal))
@@ -274,6 +279,7 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 			if len(replacementCalls) > 0 {
 				return fail(reject(relative, "orphan_tool_call", "compaction tool call has no matching output", ordinal))
 			}
+			clear(pending)
 			inspection.Compaction.Count++
 			inspection.Compaction.NewestComplete = true
 			boundary := ordinal
@@ -494,6 +500,14 @@ func metadata(out *model.Inspection, payload map[string]any, component string, o
 		if payload[field] != nil {
 			return bad("lineage", "lineage and inherited subagent history are not supported")
 		}
+	}
+	for _, field := range []string{"agent_nickname", "agent_role", "agent_type", "agent_path"} {
+		if payload[field] != nil {
+			return bad("subagent", "subagent metadata is not supported")
+		}
+	}
+	if source, ok := payload["thread_source"].(string); ok && strings.EqualFold(source, "subagent") {
+		return bad("subagent", "subagent sessions are not supported")
 	}
 	source := payload["source"]
 	if text, ok := source.(string); ok && strings.EqualFold(text, "subagent") {

@@ -175,7 +175,12 @@ func TestCollisionLiveAndArchived(t *testing.T) {
 func TestCaptureDetectsMutationAndReleasesLock(t *testing.T) {
 	src, rel, raw := testSource(t)
 	dst := filepath.Join(tempDir(t), "bundle")
-	_, err := capture(context.Background(), src, CaptureOptions{BundleDir: dst}, func() error { return os.WriteFile(filepath.Join(src.Root, rel), append(raw, '\n'), 0600) })
+	_, err := capture(context.Background(), src, CaptureOptions{BundleDir: dst}, func(phase string) error {
+		if phase == "copied" {
+			return os.WriteFile(filepath.Join(src.Root, rel), append(raw, '\n'), 0600)
+		}
+		return nil
+	})
 	var integrity *IntegrityError
 	if !errors.As(err, &integrity) {
 		t.Fatalf("want integrity rejection: %v", err)

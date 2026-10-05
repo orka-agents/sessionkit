@@ -93,8 +93,14 @@ func Capture(ctx context.Context, src Source, o CaptureOptions) (Bundle, error) 
 	return capture(ctx, src, o, nil)
 }
 
-func capture(ctx context.Context, src Source, o CaptureOptions, afterCopy func() error) (Bundle, error) {
+func capture(ctx context.Context, src Source, o CaptureOptions, hook func(string) error) (Bundle, error) {
 	var empty Bundle
+	hit := func(phase string) error {
+		if hook != nil {
+			return hook(phase)
+		}
+		return nil
+	}
 	b := budget.New(ctx, o.Budget)
 	if err := b.Check(); err != nil {
 		return empty, err
@@ -158,6 +164,12 @@ func capture(ctx context.Context, src Source, o CaptureOptions, afterCopy func()
 			}
 		}
 	}()
+	if err = hit("bundle_created"); err != nil {
+		return empty, err
+	}
+	if err = parent.SyncDir("."); err != nil {
+		return empty, err
+	}
 	if err = out.Mkdir("components"); err != nil {
 		return empty, err
 	}
@@ -182,10 +194,8 @@ func capture(ctx context.Context, src Source, o CaptureOptions, afterCopy func()
 	if err != nil {
 		return empty, err
 	}
-	if afterCopy != nil {
-		if err = afterCopy(); err != nil {
-			return empty, err
-		}
+	if err = hit("copied"); err != nil {
+		return empty, err
 	}
 	after, afterSize, err := digestFile(root, rel, b)
 	if err != nil {

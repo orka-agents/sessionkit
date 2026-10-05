@@ -153,6 +153,9 @@ func (r *Root) MkdirAll(name string) error {
 	}
 	return d.Close()
 }
+
+// Mkdir creates a private directory. The caller must sync its parent after
+// registering cleanup for any subsequent failure.
 func (r *Root) Mkdir(name string) error {
 	if !ValidPath(name) {
 		return fmt.Errorf("invalid directory path")
@@ -162,10 +165,7 @@ func (r *Root) Mkdir(name string) error {
 		return err
 	}
 	defer func() { _ = d.Close() }()
-	if err = unix.Mkdirat(int(d.Fd()), path.Base(name), 0700); err != nil {
-		return err
-	}
-	return d.Sync()
+	return unix.Mkdirat(int(d.Fd()), path.Base(name), 0700)
 }
 func (r *Root) RemoveDir(name string) error {
 	if !ValidPath(name) {
@@ -287,17 +287,22 @@ func (r *Root) WalkFiles(name string, visit func(string, bool) error) error {
 }
 func walk(d *os.File, prefix string, visit func(string, bool) error) error {
 	for {
-		entries, err := d.ReadDir(64)
+		entries, err := d.Readdirnames(64)
 		for _, entry := range entries {
-			name := path.Join(prefix, entry.Name())
-			if err := visit(name, entry.IsDir()); err != nil {
+			var stat unix.Stat_t
+			if err := unix.Fstatat(int(d.Fd()), entry, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 				return err
 			}
-			if entry.Type()&os.ModeSymlink != 0 {
+			mode := stat.Mode & unix.S_IFMT
+			name := path.Join(prefix, entry)
+			if err := visit(name, mode == unix.S_IFDIR); err != nil {
+				return err
+			}
+			if mode == unix.S_IFLNK {
 				return fmt.Errorf("symlink in session tree")
 			}
-			if entry.IsDir() {
-				fd, e := unix.Openat(int(d.Fd()), entry.Name(), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+			if mode == unix.S_IFDIR {
+				fd, e := unix.Openat(int(d.Fd()), entry, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 				if e != nil {
 					return e
 				}
@@ -307,7 +312,7 @@ func walk(d *os.File, prefix string, visit func(string, bool) error) error {
 				if e != nil {
 					return e
 				}
-			} else if !entry.Type().IsRegular() {
+			} else if mode != unix.S_IFREG {
 				return fmt.Errorf("special file in session tree")
 			}
 		}

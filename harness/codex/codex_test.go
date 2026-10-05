@@ -88,6 +88,13 @@ func TestProfileRejections(t *testing.T) {
 			m["source"] = map[string]any{"subagent": map[string]any{"thread_spawn": map[string]any{"parent_thread_id": otherThread}}}
 		}},
 		{name: "subagent string", code: "subagent", mutate: func(m map[string]any) { m["source"] = "SubAgent" }},
+		{name: "subagent thread source", code: "subagent", mutate: func(m map[string]any) { m["thread_source"] = "subagent" }},
+		{name: "subagent nickname", code: "subagent", mutate: func(m map[string]any) { m["agent_nickname"] = "worker" }},
+		{name: "subagent role", code: "subagent", mutate: func(m map[string]any) { m["agent_role"] = "worker" }},
+		{name: "subagent role alias", code: "subagent", mutate: func(m map[string]any) { m["agent_type"] = "worker" }},
+		{name: "subagent path", code: "subagent", mutate: func(m map[string]any) { m["agent_path"] = "/worker" }},
+		{name: "inter-agent communication", code: "lineage", suffix: line(t, 1, "inter_agent_communication", map[string]any{})},
+		{name: "inter-agent metadata", code: "lineage", suffix: line(t, 1, "inter_agent_communication_metadata", map[string]any{})},
 		{name: "second metadata", code: "session_meta", suffix: line(t, 1, "session_meta", meta())},
 		{name: "orphan output", code: "orphan_tool_output", suffix: line(t, 1, "response_item", map[string]any{"type": "function_call_output", "call_id": "absent", "output": "private body"})},
 		{name: "orphan call", code: "orphan_tool_call", suffix: line(t, 1, "response_item", map[string]any{"type": "custom_tool_call", "call_id": "absent", "name": "test", "input": "private body"})},
@@ -114,6 +121,45 @@ func TestProfileRejections(t *testing.T) {
 	}
 	_, err := inspect(t, line(t, 2, "session_meta", meta())+line(t, 1, "future", nil))
 	assertRejection(t, err, "ordinal_order")
+}
+
+func TestRecordTimestamps(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value any
+		valid bool
+	}{
+		{"missing", nil, false},
+		{"null", nil, false},
+		{"number", 1, false},
+		{"boolean", true, false},
+		{"object", map[string]any{}, false},
+		{"empty string", "", true},
+	} {
+		for _, first := range []bool{true, false} {
+			t.Run(tc.name+map[bool]string{true: "/first", false: "/later"}[first], func(t *testing.T) {
+				record := map[string]any{"ordinal": 0, "timestamp": tc.value, "type": "session_meta", "payload": meta()}
+				data := ""
+				if !first {
+					data = line(t, 0, "session_meta", meta())
+					record["ordinal"], record["type"], record["payload"] = 1, "future_record", nil
+				}
+				if tc.name == "missing" {
+					delete(record, "timestamp")
+				}
+				encoded, err := json.Marshal(record)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = inspect(t, data+string(encoded)+"\n")
+				if !tc.valid {
+					assertRejection(t, err, "timestamp")
+				} else if err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
+	}
 }
 
 func TestCustomToolsCompactionAndWarnings(t *testing.T) {
@@ -278,6 +324,17 @@ func TestCompactionReplacementHistory(t *testing.T) {
 	// A call in the discarded prefix cannot satisfy a replacement output.
 	_, err := inspect(t, line(t, 0, "session_meta", meta())+line(t, 1, "response_item", call)+line(t, 2, "response_item", output)+line(t, 3, "compacted", map[string]any{"message": "summary", "replacement_history": []any{output}, "window_number": 1}))
 	assertRejection(t, err, "orphan_tool_output")
+	// Compaction discards pending calls from the previous effective history.
+	prefix := line(t, 0, "session_meta", meta()) + line(t, 1, "response_item", call) +
+		line(t, 2, "compacted", map[string]any{"message": "summary", "replacement_history": []any{}, "window_number": 1})
+	if _, err := inspect(t, prefix); err != nil {
+		t.Fatal(err)
+	}
+	_, err = inspect(t, prefix+line(t, 3, "response_item", output))
+	assertRejection(t, err, "orphan_tool_output")
+	if _, err := inspect(t, prefix+line(t, 3, "response_item", call)+line(t, 4, "response_item", output)); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestUnvalidatedToolShapesReject(t *testing.T) {
