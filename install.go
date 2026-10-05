@@ -163,18 +163,9 @@ func install(ctx context.Context, p Plan, hook installHook) (Receipt, error) {
 	if err = hit("staged"); err != nil {
 		return unknown(err)
 	}
-	a, err := adapterFor(p.destination.Harness)
-	if err != nil {
-		return failBeforePublication(err)
-	}
-	lock, err := a.LockPublication(ctx, root, p.ThreadID)
-	if err != nil {
-		return failBeforePublication(operationError(b, err))
-	}
-	defer func() { _ = lock.Close() }()
-	rejectCollision := func(err error) (Receipt, error) {
+	rejectUnpublished := func(err error) (Receipt, error) {
 		// A staged retry may have linked already. Keep its witness until the
-		// caller resolves the competing identity.
+		// caller resolves the blocker.
 		if resumingStaged {
 			return unknown(err)
 		}
@@ -188,9 +179,18 @@ func install(ctx context.Context, p Plan, hook installHook) (Receipt, error) {
 		_ = root.Remove(state.TempPath)
 		return receipt, err
 	}
+	a, err := adapterFor(p.destination.Harness)
+	if err != nil {
+		return rejectUnpublished(err)
+	}
+	lock, err := a.LockPublication(ctx, root, p.ThreadID)
+	if err != nil {
+		return rejectUnpublished(operationError(b, err))
+	}
+	defer func() { _ = lock.Close() }()
 	// Recheck every matching filename while holding Codex's publication lock.
 	if err = collision(root, p.ThreadID, p.TargetPath, b); err != nil {
-		return rejectCollision(err)
+		return rejectUnpublished(err)
 	}
 	if err = root.CheckPath(p.destination.Root); err != nil {
 		return unknown(err)
@@ -212,7 +212,7 @@ func install(ctx context.Context, p Plan, hook installHook) (Receipt, error) {
 			return unknown(e)
 		}
 		if !os.SameFile(targetInfo, tempInfo) {
-			return rejectCollision(&CollisionError{ThreadID: p.ThreadID, TargetPath: p.TargetPath})
+			return rejectUnpublished(&CollisionError{ThreadID: p.ThreadID, TargetPath: p.TargetPath})
 		}
 	} else {
 		if !errors.Is(targetErr, os.ErrNotExist) {
@@ -235,7 +235,7 @@ func install(ctx context.Context, p Plan, hook installHook) (Receipt, error) {
 		}
 		if err = root.Link(state.TempPath, p.TargetPath); err != nil {
 			if errors.Is(err, os.ErrExist) {
-				return rejectCollision(&CollisionError{ThreadID: p.ThreadID, TargetPath: p.TargetPath})
+				return rejectUnpublished(&CollisionError{ThreadID: p.ThreadID, TargetPath: p.TargetPath})
 			}
 			return unknown(err)
 		}

@@ -194,13 +194,15 @@ func TestInstallRejectsActiveDestinationWriter(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = writer.Close() })
-	_, err = Install(context.Background(), plan)
-	var active *ActiveWriterError
-	if !errors.As(err, &active) {
-		t.Fatalf("expected destination writer rejection, got %v", err)
-	}
-	if _, err = os.Stat(filepath.Join(dst.Root, rel)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("install published beside an active writer: %v", err)
+	for attempt := range 2 {
+		receipt, err := Install(context.Background(), plan)
+		var active *ActiveWriterError
+		if !errors.As(err, &active) || receipt.Outcome != RejectedBeforeMutation || receipt.Phase != "planned" {
+			t.Fatalf("attempt %d must reject the destination writer before publication: %+v %v", attempt, receipt, err)
+		}
+		if _, err = os.Stat(filepath.Join(dst.Root, rel)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("install published beside an active writer: %v", err)
+		}
 	}
 	if err = writer.Close(); err != nil {
 		t.Fatal(err)
