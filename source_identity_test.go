@@ -117,6 +117,30 @@ func TestCaptureRejectsMovedBundlePath(t *testing.T) {
 	}
 }
 
+func TestCaptureRejectsReplacedBundleParent(t *testing.T) {
+	src, _, _ := testSource(t)
+	parent := tempDir(t)
+	dir := filepath.Join(parent, "bundle")
+	moved := parent + "-moved"
+	t.Cleanup(func() { _ = os.RemoveAll(moved) })
+	original := adapters[Codex]
+	adapters[Codex] = replacingSourceAdapter{Adapter: original, afterLock: func() error {
+		if err := os.Rename(parent, moved); err != nil {
+			return err
+		}
+		return os.MkdirAll(dir, 0700)
+	}}
+	t.Cleanup(func() { adapters[Codex] = original })
+	_, err := Capture(context.Background(), src, CaptureOptions{BundleDir: dir})
+	if err == nil || !strings.Contains(err.Error(), "moved or replaced") {
+		t.Fatalf("capture accepted an unowned bundle directory: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("capture wrote into the replacement: %v %v", entries, err)
+	}
+}
+
 func TestOpenBundleRejectsMovedPath(t *testing.T) {
 	_, bundle, _, _ := testBundle(t)
 	original := adapters[Codex]
@@ -130,6 +154,31 @@ func TestOpenBundleRejectsMovedPath(t *testing.T) {
 	_, err := OpenBundle(context.Background(), bundle.Dir, Budget{})
 	if err == nil || !strings.Contains(err.Error(), "moved or replaced") {
 		t.Fatalf("open must reject a replaced bundle path, got %v", err)
+	}
+}
+
+func TestCancellationAfterInspectionRejectsSuccess(t *testing.T) {
+	for _, operation := range []string{"inspect", "open bundle"} {
+		t.Run(operation, func(t *testing.T) {
+			src, bundle, _, _ := testBundle(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			original := adapters[Codex]
+			adapters[Codex] = replacingSourceAdapter{Adapter: original, afterInspect: func() error {
+				cancel()
+				return nil
+			}}
+			t.Cleanup(func() { adapters[Codex] = original })
+			var err error
+			if operation == "inspect" {
+				_, err = Inspect(ctx, src, Budget{})
+			} else {
+				_, err = OpenBundle(ctx, bundle.Dir, Budget{})
+			}
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("reported success after cancellation: %v", err)
+			}
+		})
 	}
 }
 

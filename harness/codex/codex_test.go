@@ -77,6 +77,8 @@ func TestProfileRejections(t *testing.T) {
 		{name: "unknown mode", code: "history_mode", mutate: func(m map[string]any) { m["history_mode"] = "future" }},
 		{name: "version", code: "cli_version", mutate: func(m map[string]any) { m["cli_version"] = "0.159.1" }},
 		{name: "mismatched ID", code: "thread_id", mutate: func(m map[string]any) { m["id"] = otherThread }},
+		{name: "different root session", code: "lineage", mutate: func(m map[string]any) { m["session_id"] = otherThread }},
+		{name: "null root session", code: "lineage", mutate: func(m map[string]any) { m["session_id"] = nil }},
 		{name: "history base", code: "lineage", mutate: func(m map[string]any) { m["history_base"] = map[string]any{"thread_id": otherThread} }},
 		{name: "fork", code: "lineage", mutate: func(m map[string]any) { m["forked_from_id"] = otherThread }},
 		{name: "fork ordinal zero", code: "lineage", mutate: func(m map[string]any) { m["forked_from_ordinal_exclusive"] = 0 }},
@@ -269,4 +271,22 @@ func TestCompactionReplacementHistory(t *testing.T) {
 	// A call in the discarded prefix cannot satisfy a replacement output.
 	_, err := inspect(t, line(t, 0, "session_meta", meta())+line(t, 1, "response_item", call)+line(t, 2, "response_item", output)+line(t, 3, "compacted", map[string]any{"replacement_history": []any{output}, "window_number": 1}))
 	assertRejection(t, err, "orphan_tool_output")
+}
+
+func TestUnvalidatedToolShapesReject(t *testing.T) {
+	for _, kind := range []string{"local_shell_call", "tool_search_call", "tool_search_output"} {
+		for _, compacted := range []bool{false, true} {
+			t.Run(kind+map[bool]string{false: "/rollout", true: "/replacement"}[compacted], func(t *testing.T) {
+				item := map[string]any{"type": kind, "call_id": "call-1"}
+				data := line(t, 0, "session_meta", meta())
+				if compacted {
+					data += line(t, 1, "compacted", map[string]any{"replacement_history": []any{item}, "window_number": 1})
+				} else {
+					data += line(t, 1, "response_item", item)
+				}
+				_, err := inspect(t, data)
+				assertRejection(t, err, "unsupported_tool")
+			})
+		}
+	}
 }

@@ -82,7 +82,7 @@ func (e *RejectionError) Error() string {
 
 type ActiveWriterError struct{ ThreadID string }
 
-func (e *ActiveWriterError) Error() string { return "source has an active writer: " + e.ThreadID }
+func (e *ActiveWriterError) Error() string { return "thread has an active writer: " + e.ThreadID }
 
 type CollisionError struct {
 	ThreadID   string

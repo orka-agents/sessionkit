@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/orka-agents/sessionkit/internal/fsx"
 	"github.com/orka-agents/sessionkit/internal/model"
 	"golang.org/x/sys/unix"
 )
@@ -169,5 +170,36 @@ func TestInvalidThreadAndSymlinkLock(t *testing.T) {
 	if lock, err := Source(context.Background(), home, testID); err == nil {
 		_ = lock.Close()
 		t.Fatal("accepted symlink lock directory")
+	}
+}
+
+func TestPublicationUsesRetainedHome(t *testing.T) {
+	home := canonicalTemp(t)
+	writer, err := Source(context.Background(), home, testID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = writer.Close() }()
+	root, err := fsx.OpenRoot(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	moved := home + "-moved"
+	t.Cleanup(func() { _ = os.RemoveAll(moved) })
+	if err = os.Rename(home, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Mkdir(home, 0700); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := PublicationAt(context.Background(), root, testID)
+	if lock != nil {
+		_ = lock.Close()
+		t.Fatal("publication bypassed the original home's active writer")
+	}
+	var active *model.ActiveWriterError
+	if !errors.As(err, &active) {
+		t.Fatalf("expected original writer rejection, got %v", err)
 	}
 }

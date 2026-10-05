@@ -47,6 +47,15 @@ func OpenRoot(name string) (*Root, error) {
 
 func (r *Root) Close() error { return r.dir.Close() }
 
+// Sub opens a directory through the retained root without reopening its path.
+func (r *Root) Sub(name string) (*Root, error) {
+	dir, err := r.openDir(name, false)
+	if err != nil {
+		return nil, err
+	}
+	return &Root{dir: dir}, nil
+}
+
 // CheckPath detects a root renamed or replaced while descriptors remain open.
 func (r *Root) CheckPath(name string) error {
 	current, err := OpenRoot(name)

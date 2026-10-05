@@ -35,8 +35,8 @@ var _ harness.Adapter = Adapter{}
 func (Adapter) LockSource(ctx context.Context, src model.Source, root *fsx.Root) (io.Closer, error) {
 	return writerlock.SourceAt(ctx, root, src.ThreadID)
 }
-func (Adapter) LockPublication(ctx context.Context, root, threadID string) (io.Closer, error) {
-	return writerlock.Publication(ctx, root, threadID)
+func (Adapter) LockPublication(ctx context.Context, root *fsx.Root, threadID string) (io.Closer, error) {
+	return writerlock.PublicationAt(ctx, root, threadID)
 }
 
 func reject(component, code, message string, ordinal uint64) *model.RejectionError {
@@ -351,6 +351,8 @@ func responseItem(payload map[string]any, pending map[string]toolCall, component
 		return reject(component, "response_item", "response item type must be a nonempty string", ordinal)
 	}
 	switch kind {
+	case "local_shell_call", "tool_search_call", "tool_search_output":
+		return reject(component, "unsupported_tool", "tool record shape is not supported by this profile", ordinal)
 	case "function_call", "custom_tool_call":
 		callID, ok := payload["call_id"].(string)
 		if !ok || callID == "" {
@@ -409,6 +411,10 @@ func metadata(out *model.Inspection, payload map[string]any, component string, o
 	}
 	if payload["id"] != out.ThreadID {
 		return bad("thread_id", "filename and session metadata thread IDs differ")
+	}
+	// The pinned native deserializer defaults an omitted session_id to id.
+	if sessionID, present := payload["session_id"]; present && sessionID != out.ThreadID {
+		return bad("lineage", "root session ID must match the selected thread ID")
 	}
 	version, ok := payload["cli_version"].(string)
 	if !ok {

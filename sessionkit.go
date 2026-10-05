@@ -79,10 +79,8 @@ func Inspect(ctx context.Context, src Source, limits Budget) (Inspection, error)
 }
 
 func operationError(b *budget.Tracker, err error) error {
-	if err != nil {
-		if budgetErr := b.Check(); budgetErr != nil {
-			return budgetErr
-		}
+	if budgetErr := b.Check(); budgetErr != nil {
+		return budgetErr
 	}
 	return err
 }
@@ -143,7 +141,7 @@ func capture(ctx context.Context, src Source, o CaptureOptions, afterCopy func()
 	if err = parent.Mkdir(filepath.Base(o.BundleDir)); err != nil {
 		return empty, err
 	}
-	out, err := fsx.OpenRoot(o.BundleDir)
+	out, err := parent.Sub(filepath.Base(o.BundleDir))
 	if err != nil {
 		return empty, err
 	}
@@ -306,6 +304,9 @@ func openBundle(ctx context.Context, dir string, b *budget.Tracker) (Bundle, str
 	if err = root.CheckPath(dir); err != nil {
 		return empty, "", err
 	}
+	if err = b.Check(); err != nil {
+		return empty, "", err
+	}
 	return Bundle{Dir: filepath.Clean(dir), Manifest: m}, sha(raw), nil
 }
 
@@ -451,6 +452,9 @@ func PlanInstall(ctx context.Context, bundle Bundle, dst Destination) (Plan, err
 			AppServerParams: map[string]any{"threadId": checked.Manifest.ThreadID, "cwd": dst.WorkingDir, "runtimeWorkspaceRoots": roots}},
 		bundleDir: checked.Dir, destination: dst}
 	p.seal = planSeal(p)
+	if err = b.Check(); err != nil {
+		return empty, err
+	}
 	return p, nil
 }
 func planSeal(p Plan) string {
@@ -487,6 +491,9 @@ func Verify(ctx context.Context, receipt Receipt, dst Destination) (Verification
 		return empty, &IntegrityError{Component: "rollout", Reason: "target digest mismatch"}
 	}
 	if err = root.CheckPath(dst.Root); err != nil {
+		return empty, err
+	}
+	if err = b.Check(); err != nil {
 		return empty, err
 	}
 	return Verification{Valid: true, TargetPath: receipt.TargetPath, TargetDigest: digest, SizeBytes: size}, nil

@@ -167,7 +167,7 @@ func install(ctx context.Context, p Plan, hook installHook) (Receipt, error) {
 	if err != nil {
 		return failBeforePublication(err)
 	}
-	lock, err := a.LockPublication(ctx, p.destination.Root, p.ThreadID)
+	lock, err := a.LockPublication(ctx, root, p.ThreadID)
 	if err != nil {
 		return failBeforePublication(operationError(b, err))
 	}
@@ -298,6 +298,9 @@ func finishInstall(ctx context.Context, p Plan, receipt Receipt, state journal.S
 		}
 	}
 	if err = j.CheckPath(); err != nil {
+		return fail(err)
+	}
+	if err = b.Check(); err != nil {
 		return fail(err)
 	}
 	receipt.Phase = "verified"

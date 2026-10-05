@@ -14,5 +14,5 @@ type Adapter interface {
 	Select(context.Context, model.Source, *fsx.Root, *budget.Tracker) (string, error)
 	Layout(model.Inspection, string) (string, error)
 	LockSource(context.Context, model.Source, *fsx.Root) (io.Closer, error)
-	LockPublication(context.Context, string, string) (io.Closer, error)
+	LockPublication(context.Context, *fsx.Root, string) (io.Closer, error)
 }

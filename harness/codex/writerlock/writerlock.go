@@ -63,14 +63,19 @@ func SourceAt(ctx context.Context, root *fsx.Root, threadID string) (io.Closer, 
 // Publication probes the thread's writer lock while holding coordination, then
 // keeps coordination held until the caller finishes publication.
 func Publication(ctx context.Context, home, threadID string) (io.Closer, error) {
-	if !ValidThreadID(threadID) {
-		return nil, &model.RejectionError{Rejections: []model.Rejection{{Code: "thread_id", Message: "thread ID must be a canonical UUIDv7"}}}
-	}
 	root, err := fsx.OpenRoot(home)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = root.Close() }()
+	return PublicationAt(ctx, root, threadID)
+}
+
+// PublicationAt locks the same retained root used for publication.
+func PublicationAt(ctx context.Context, root *fsx.Root, threadID string) (io.Closer, error) {
+	if !ValidThreadID(threadID) {
+		return nil, &model.RejectionError{Rejections: []model.Rejection{{Code: "thread_id", Message: "thread ID must be a canonical UUIDv7"}}}
+	}
 	file, err := coordinate(ctx, root)
 	if err != nil {
 		return nil, err
