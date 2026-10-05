@@ -49,26 +49,32 @@ func Inspect(ctx context.Context, src Source, limits Budget) (Inspection, error)
 	}
 	ctx, cancel := operationContext(ctx, b)
 	defer cancel()
-	lock, err := a.LockSource(ctx, src)
-	if err != nil {
-		return empty, operationError(b, err)
-	}
-	defer func() { _ = lock.Close() }()
-	rel, err := a.Select(ctx, src, b)
-	if err != nil {
-		return empty, operationError(b, err)
-	}
 	root, err := fsx.OpenRoot(src.Root)
 	if err != nil {
 		return empty, err
 	}
 	defer func() { _ = root.Close() }()
+	lock, err := a.LockSource(ctx, src, root)
+	if err != nil {
+		return empty, operationError(b, err)
+	}
+	defer func() { _ = lock.Close() }()
+	if err = root.CheckPath(src.Root); err != nil {
+		return empty, err
+	}
+	rel, err := a.Select(ctx, src, root, b)
+	if err != nil {
+		return empty, operationError(b, err)
+	}
 	f, err := root.Open(rel)
 	if err != nil {
 		return empty, err
 	}
 	defer func() { _ = f.Close() }()
 	in, err := a.Inspect(ctx, f, rel, b)
+	if err == nil {
+		err = root.CheckPath(src.Root)
+	}
 	return in, operationError(b, err)
 }
 
@@ -110,20 +116,23 @@ func capture(ctx context.Context, src Source, o CaptureOptions, afterCopy func()
 		return empty, err
 	}
 	defer func() { _ = parent.Close() }()
-	lock, err := a.LockSource(ctx, src)
-	if err != nil {
-		return empty, operationError(b, err)
-	}
-	defer func() { _ = lock.Close() }()
-	rel, err := a.Select(ctx, src, b)
-	if err != nil {
-		return empty, operationError(b, err)
-	}
 	root, err := fsx.OpenRoot(src.Root)
 	if err != nil {
 		return empty, err
 	}
 	defer func() { _ = root.Close() }()
+	lock, err := a.LockSource(ctx, src, root)
+	if err != nil {
+		return empty, operationError(b, err)
+	}
+	defer func() { _ = lock.Close() }()
+	if err = root.CheckPath(src.Root); err != nil {
+		return empty, err
+	}
+	rel, err := a.Select(ctx, src, root, b)
+	if err != nil {
+		return empty, operationError(b, err)
+	}
 	before, size, err := digestFile(root, rel, b)
 	if err != nil {
 		return empty, err
@@ -142,10 +151,13 @@ func capture(ctx context.Context, src Source, o CaptureOptions, afterCopy func()
 	success := false
 	defer func() {
 		if !success {
+			ownsPath := out.CheckPath(o.BundleDir) == nil
 			_ = out.Remove(bundleio.RolloutPath)
 			_ = out.Remove("manifest.json")
 			_ = out.RemoveDir("components")
-			_ = parent.RemoveDir(filepath.Base(o.BundleDir))
+			if ownsPath {
+				_ = parent.RemoveDir(filepath.Base(o.BundleDir))
+			}
 		}
 	}()
 	if err = out.Mkdir("components"); err != nil {
@@ -184,6 +196,9 @@ func capture(ctx context.Context, src Source, o CaptureOptions, afterCopy func()
 	if before != copied || before != after || size != n || size != afterSize {
 		return empty, &IntegrityError{Component: "rollout", Reason: "source changed during capture"}
 	}
+	if err = root.CheckPath(src.Root); err != nil {
+		return empty, err
+	}
 	f, err := out.Open(bundleio.RolloutPath)
 	if err != nil {
 		return empty, err
@@ -211,6 +226,12 @@ func capture(ctx context.Context, src Source, o CaptureOptions, afterCopy func()
 		return empty, err
 	}
 	if err = bundleio.Write(out, data); err != nil {
+		return empty, err
+	}
+	if err = out.CheckPath(o.BundleDir); err != nil {
+		return empty, err
+	}
+	if err = root.CheckPath(src.Root); err != nil {
 		return empty, err
 	}
 	success = true
@@ -336,20 +357,26 @@ func validateDestination(dst Destination) error {
 	if _, err := adapterFor(dst.Harness); err != nil {
 		return err
 	}
-	for _, dir := range []string{dst.Root, dst.WorkingDir, dst.JournalDir} {
-		r, err := fsx.OpenRoot(dir)
-		if err != nil {
-			return err
-		}
-		_ = r.Close()
-	}
-	root := filepath.Clean(dst.Root)
-	journal := filepath.Clean(dst.JournalDir)
-	rel, err := filepath.Rel(root, journal)
+	workspace, err := fsx.OpenRoot(dst.WorkingDir)
 	if err != nil {
 		return err
 	}
-	if rel == "." || rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	_ = workspace.Close()
+	root, err := fsx.OpenRoot(dst.Root)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+	journal, err := fsx.OpenRoot(dst.JournalDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = journal.Close() }()
+	inside, err := root.Contains(journal)
+	if err != nil {
+		return err
+	}
+	if inside {
 		return reject("journal_path", "journal directory must be outside destination home")
 	}
 	return nil

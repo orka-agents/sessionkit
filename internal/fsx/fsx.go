@@ -68,6 +68,42 @@ func (r *Root) CheckPath(name string) error {
 	return nil
 }
 
+// Contains checks directory ancestry by identity, including case aliases.
+func (r *Root) Contains(other *Root) (bool, error) {
+	expected, err := r.dir.Stat()
+	if err != nil {
+		return false, err
+	}
+	current, err := other.openDir(".", false)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = current.Close() }()
+	for {
+		actual, err := current.Stat()
+		if err != nil {
+			return false, err
+		}
+		if os.SameFile(expected, actual) {
+			return true, nil
+		}
+		fd, err := unix.Openat(int(current.Fd()), "..", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+		if err != nil {
+			return false, err
+		}
+		parent := os.NewFile(uintptr(fd), "..")
+		parentInfo, err := parent.Stat()
+		_ = current.Close()
+		current = parent
+		if err != nil {
+			return false, err
+		}
+		if os.SameFile(actual, parentInfo) {
+			return false, nil
+		}
+	}
+}
+
 func (r *Root) openDir(name string, create bool) (*os.File, error) {
 	if name != "." && !ValidPath(name) {
 		return nil, fmt.Errorf("invalid relative directory")

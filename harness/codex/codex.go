@@ -32,8 +32,8 @@ type Adapter struct{}
 
 var _ harness.Adapter = Adapter{}
 
-func (Adapter) LockSource(ctx context.Context, src model.Source) (io.Closer, error) {
-	return writerlock.Source(ctx, src.Root, src.ThreadID)
+func (Adapter) LockSource(ctx context.Context, src model.Source, root *fsx.Root) (io.Closer, error) {
+	return writerlock.SourceAt(ctx, root, src.ThreadID)
 }
 func (Adapter) LockPublication(ctx context.Context, root string) (io.Closer, error) {
 	return writerlock.Publication(ctx, root)
@@ -87,21 +87,16 @@ func ValidatePath(relative string) (string, error) {
 	return id, nil
 }
 
-func (Adapter) Select(ctx context.Context, src model.Source, tracker *budget.Tracker) (string, error) {
+func (Adapter) Select(ctx context.Context, src model.Source, root *fsx.Root, tracker *budget.Tracker) (string, error) {
 	if !writerlock.ValidThreadID(src.ThreadID) {
 		return "", reject("", "thread_id", "thread ID must be a canonical UUIDv7", 0)
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	root, err := fsx.OpenRoot(src.Root)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = root.Close() }()
 	var selected string
 	for _, dir := range []string{"sessions", "archived_sessions"} {
-		err = root.WalkFiles(dir, func(name string, isDir bool) error {
+		err := root.WalkFiles(dir, func(name string, isDir bool) error {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
@@ -182,6 +177,7 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 	counted := &countReader{input: io.TeeReader(input, digest)}
 	reader := jsonl.New(counted, tracker)
 	pending := make(map[string]toolCall)
+	turns := make(map[string]uint64)
 	warned := make(map[string]bool)
 	warn := func(code, message string, ordinal uint64) {
 		if !warned[code] {
@@ -236,29 +232,15 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 				return fail(err)
 			}
 		case "response_item":
-			itemKind, ok := payload["type"].(string)
-			if !ok || itemKind == "" {
-				return fail(reject(relative, "response_item", "response item type must be a nonempty string", ordinal))
+			if err := responseItem(payload, pending, relative, ordinal); err != nil {
+				return fail(err)
 			}
+			itemKind := payload["type"].(string)
 			inspection.Records.ResponseItems[itemKind]++
 			switch itemKind {
 			case "function_call", "custom_tool_call":
-				callID, ok := payload["call_id"].(string)
-				if !ok || callID == "" {
-					return fail(reject(relative, "tool_call", "tool call must have a call ID", ordinal))
-				}
-				if _, exists := pending[callID]; exists {
-					return fail(reject(relative, "tool_call", "tool call ID is already pending", ordinal))
-				}
-				pending[callID] = toolCall{itemKind, ordinal}
 				inspection.Records.ToolCalls++
 			case "function_call_output", "custom_tool_call_output":
-				callID, ok := payload["call_id"].(string)
-				call, exists := pending[callID]
-				if !ok || !exists || call.kind+"_output" != itemKind {
-					return fail(reject(relative, "orphan_tool_output", "tool output has no matching pending call", ordinal))
-				}
-				delete(pending, callID)
 				inspection.Records.ToolOutputs++
 				inspection.Records.ToolPairs++
 			}
@@ -266,15 +248,45 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 			if payload == nil {
 				return fail(reject(relative, "compacted", "compaction payload must be an object", ordinal))
 			}
-			_, history := payload["replacement_history"].([]any)
+			history, complete := payload["replacement_history"].([]any)
 			_, window := unsigned(payload["window_number"])
-			inspection.Compaction.Count++
-			inspection.Compaction.NewestComplete = history && window
-			if inspection.Compaction.NewestComplete {
-				boundary := ordinal
-				inspection.Compaction.NewestCompleteBoundaryOrdinal = &boundary
+			if !complete || !window {
+				return fail(reject(relative, "compacted", "compaction requires replacement history and an unsigned window number", ordinal))
 			}
+			replacementCalls := make(map[string]toolCall)
+			for _, item := range history {
+				payload, _ := item.(map[string]any)
+				if err := responseItem(payload, replacementCalls, relative, ordinal); err != nil {
+					return fail(err)
+				}
+			}
+			if len(replacementCalls) > 0 {
+				return fail(reject(relative, "orphan_tool_call", "compaction tool call has no matching output", ordinal))
+			}
+			inspection.Compaction.Count++
+			inspection.Compaction.NewestComplete = true
+			boundary := ordinal
+			inspection.Compaction.NewestCompleteBoundaryOrdinal = &boundary
 		case "event_msg":
+			switch payload["type"] {
+			case "task_started", "turn_started", "task_complete", "turn_complete":
+				turnID, ok := payload["turn_id"].(string)
+				if !ok || turnID == "" {
+					return fail(reject(relative, "turn_lifecycle", "turn lifecycle event must have a turn ID", ordinal))
+				}
+				if payload["type"] == "task_started" || payload["type"] == "turn_started" {
+					if _, exists := turns[turnID]; exists {
+						return fail(reject(relative, "turn_lifecycle", "turn ID is already active", ordinal))
+					}
+					turns[turnID] = ordinal
+				} else {
+					delete(turns, turnID)
+				}
+			case "turn_aborted":
+				if turnID, ok := payload["turn_id"].(string); ok && turnID != "" {
+					delete(turns, turnID)
+				}
+			}
 			if payload["type"] == "thread_settings_applied" && payload["thread_id"] == inspection.ThreadID {
 				settings, _ := payload["thread_settings"].(map[string]any)
 				cwd, ok := settings["cwd"].(string)
@@ -305,6 +317,13 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 	if inspection.Records.Total == 0 {
 		return fail(reject(relative, "session_meta", "rollout is empty", 0))
 	}
+	if len(turns) > 0 {
+		ordinal := inspection.Records.LastOrdinal
+		for _, started := range turns {
+			ordinal = min(ordinal, started)
+		}
+		return fail(reject(relative, "in_flight_turn", "turn has no matching completion or abort", ordinal))
+	}
 	if len(pending) > 0 {
 		ordinal := inspection.Records.LastOrdinal
 		for _, call := range pending {
@@ -324,6 +343,32 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 	inspection.SourceDigest = hex.EncodeToString(digest.Sum(nil))
 	inspection.SourceSizeBytes = counted.size
 	return inspection, nil
+}
+
+func responseItem(payload map[string]any, pending map[string]toolCall, component string, ordinal uint64) error {
+	kind, ok := payload["type"].(string)
+	if !ok || kind == "" {
+		return reject(component, "response_item", "response item type must be a nonempty string", ordinal)
+	}
+	switch kind {
+	case "function_call", "custom_tool_call":
+		callID, ok := payload["call_id"].(string)
+		if !ok || callID == "" {
+			return reject(component, "tool_call", "tool call must have a call ID", ordinal)
+		}
+		if _, exists := pending[callID]; exists {
+			return reject(component, "tool_call", "tool call ID is already pending", ordinal)
+		}
+		pending[callID] = toolCall{kind, ordinal}
+	case "function_call_output", "custom_tool_call_output":
+		callID, ok := payload["call_id"].(string)
+		call, exists := pending[callID]
+		if !ok || !exists || call.kind+"_output" != kind {
+			return reject(component, "orphan_tool_output", "tool output has no matching pending call", ordinal)
+		}
+		delete(pending, callID)
+	}
+	return nil
 }
 
 func parseError(component string, err error) error {

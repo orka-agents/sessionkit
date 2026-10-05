@@ -159,6 +159,9 @@ func install(ctx context.Context, p Plan, hook installHook) (Receipt, error) {
 		}
 		receipt.Phase = "staged"
 	}
+	if err = hit("staged"); err != nil {
+		return unknown(err)
+	}
 	a, err := adapterFor(p.destination.Harness)
 	if err != nil {
 		return failBeforePublication(err)
@@ -168,15 +171,25 @@ func install(ctx context.Context, p Plan, hook installHook) (Receipt, error) {
 		return failBeforePublication(operationError(b, err))
 	}
 	defer func() { _ = lock.Close() }()
-	// Recheck every matching filename while holding Codex's publication lock.
-	if err = collision(root, p.ThreadID, p.TargetPath, b); err != nil {
-		// A staged retry may have linked already. Keep the witness and report
-		// uncertainty until the caller resolves the competing identity.
+	rejectCollision := func(err error) (Receipt, error) {
+		// A staged retry may have linked already. Keep its witness until the
+		// caller resolves the competing identity.
 		if !fresh {
 			return unknown(err)
 		}
+		// This attempt did not publish. Record that it can restage before
+		// removing the witness, including if cleanup is interrupted.
+		state.Phase = "planned"
+		if writeErr := j.Write(state, b); writeErr != nil {
+			return unknown(writeErr)
+		}
+		receipt.Phase = "planned"
 		_ = root.Remove(state.TempPath)
 		return receipt, err
+	}
+	// Recheck every matching filename while holding Codex's publication lock.
+	if err = collision(root, p.ThreadID, p.TargetPath, b); err != nil {
+		return rejectCollision(err)
 	}
 	if err = root.CheckPath(p.destination.Root); err != nil {
 		return unknown(err)
@@ -198,11 +211,7 @@ func install(ctx context.Context, p Plan, hook installHook) (Receipt, error) {
 			return unknown(e)
 		}
 		if !os.SameFile(targetInfo, tempInfo) {
-			if !fresh {
-				return unknown(&CollisionError{ThreadID: p.ThreadID, TargetPath: p.TargetPath})
-			}
-			_ = root.Remove(state.TempPath)
-			return receipt, &CollisionError{ThreadID: p.ThreadID, TargetPath: p.TargetPath}
+			return rejectCollision(&CollisionError{ThreadID: p.ThreadID, TargetPath: p.TargetPath})
 		}
 	} else {
 		if !errors.Is(targetErr, os.ErrNotExist) {
@@ -225,11 +234,7 @@ func install(ctx context.Context, p Plan, hook installHook) (Receipt, error) {
 		}
 		if err = root.Link(state.TempPath, p.TargetPath); err != nil {
 			if errors.Is(err, os.ErrExist) {
-				if !fresh {
-					return unknown(&CollisionError{ThreadID: p.ThreadID, TargetPath: p.TargetPath})
-				}
-				_ = root.Remove(state.TempPath)
-				return receipt, &CollisionError{ThreadID: p.ThreadID, TargetPath: p.TargetPath}
+				return rejectCollision(&CollisionError{ThreadID: p.ThreadID, TargetPath: p.TargetPath})
 			}
 			return unknown(err)
 		}

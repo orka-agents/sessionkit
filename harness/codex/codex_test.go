@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/orka-agents/sessionkit/internal/budget"
+	"github.com/orka-agents/sessionkit/internal/fsx"
 	"github.com/orka-agents/sessionkit/internal/model"
 )
 
@@ -118,12 +119,12 @@ func TestCustomToolsCompactionAndWarnings(t *testing.T) {
 	metadata["git"] = map[string]any{"repository_url": "https://user:secret@example.test/repo"}
 	metadata["runtime_workspace_roots"] = []string{"/outside"}
 	data := line(t, 0, "session_meta", metadata) + line(t, 1, "response_item", map[string]any{"type": "custom_tool_call", "call_id": "custom", "input": "data"}) + line(t, 2, "response_item", map[string]any{"type": "custom_tool_call_output", "call_id": "custom", "output": "done"}) +
-		line(t, 3, "compacted", map[string]any{"replacement_history": []any{}, "window_number": 1, "encrypted_content": "secret"}) + line(t, 4, "compacted", map[string]any{"message": "partial"})
+		line(t, 3, "compacted", map[string]any{"replacement_history": []any{}, "window_number": 1, "encrypted_content": "secret"})
 	got, err := inspect(t, data)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Records.ToolPairs != 1 || got.Compaction.Count != 2 || got.Compaction.NewestComplete || got.Compaction.NewestCompleteBoundaryOrdinal == nil || *got.Compaction.NewestCompleteBoundaryOrdinal != 3 {
+	if got.Records.ToolPairs != 1 || got.Compaction.Count != 1 || !got.Compaction.NewestComplete || got.Compaction.NewestCompleteBoundaryOrdinal == nil || *got.Compaction.NewestCompleteBoundaryOrdinal != 3 {
 		t.Fatalf("summary: %+v", got)
 	}
 	warnings := map[string]bool{}
@@ -169,17 +170,22 @@ func TestPathsAndSelection(t *testing.T) {
 	}
 	write(testPath)
 	src := model.Source{Harness: model.Codex, Root: home, ThreadID: testThread}
-	selected, err := (Adapter{}).Select(context.Background(), src, budget.New(context.Background(), model.Budget{}))
+	root, err := fsx.OpenRoot(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	selected, err := (Adapter{}).Select(context.Background(), src, root, budget.New(context.Background(), model.Budget{}))
 	if err != nil || selected != testPath {
 		t.Fatalf("selection: %s %v", selected, err)
 	}
-	_, err = (Adapter{}).Select(context.Background(), src, budget.New(context.Background(), model.Budget{MaxNodes: 1}))
+	_, err = (Adapter{}).Select(context.Background(), src, root, budget.New(context.Background(), model.Budget{MaxNodes: 1}))
 	var exceeded *model.BudgetError
 	if !errors.As(err, &exceeded) {
 		t.Fatalf("selection budget: %v", err)
 	}
 	write(strings.Replace(testPath, "T00-30-00", "T00-30-01", 1))
-	_, err = (Adapter{}).Select(context.Background(), src, budget.New(context.Background(), model.Budget{}))
+	_, err = (Adapter{}).Select(context.Background(), src, root, budget.New(context.Background(), model.Budget{}))
 	assertRejection(t, err, "duplicate_source")
 }
 
@@ -189,4 +195,78 @@ func assertRejection(t *testing.T, err error, code string) {
 	if !errors.As(err, &rejected) || len(rejected.Rejections) == 0 || rejected.Rejections[0].Code != code {
 		t.Fatalf("want rejection %s, got %v", code, err)
 	}
+}
+
+func TestTurnLifecycle(t *testing.T) {
+	event := func(kind, id string) map[string]any {
+		return map[string]any{"type": kind, "turn_id": id}
+	}
+	for _, tc := range []struct {
+		name   string
+		events []map[string]any
+		code   string
+	}{
+		{"unfinished", []map[string]any{event("task_started", "turn-1")}, "in_flight_turn"},
+		{"completed", []map[string]any{event("task_started", "turn-1"), event("task_complete", "turn-1")}, ""},
+		{"aliases", []map[string]any{event("turn_started", "turn-1"), event("turn_complete", "turn-1")}, ""},
+		{"aborted", []map[string]any{event("task_started", "turn-1"), event("turn_aborted", "turn-1")}, ""},
+		{"unmatched completion", []map[string]any{event("task_started", "turn-1"), event("task_complete", "turn-2")}, "in_flight_turn"},
+		{"unmatched abort", []map[string]any{event("task_started", "turn-1"), event("turn_aborted", "turn-2")}, "in_flight_turn"},
+		{"unidentified abort", []map[string]any{event("task_started", "turn-1"), {"type": "turn_aborted"}}, "in_flight_turn"},
+		{"multiple outstanding turns", []map[string]any{event("task_started", "turn-1"), event("task_started", "turn-2"), event("task_complete", "turn-2")}, "in_flight_turn"},
+		{"missing ID", []map[string]any{{"type": "task_started"}}, "turn_lifecycle"},
+		{"duplicate start", []map[string]any{event("task_started", "turn-1"), event("task_started", "turn-1")}, "turn_lifecycle"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := line(t, 0, "session_meta", meta())
+			for i, event := range tc.events {
+				data += line(t, uint64(i+1), "event_msg", event)
+			}
+			got, err := inspect(t, data)
+			if tc.code == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			assertRejection(t, err, tc.code)
+			if tc.code == "in_flight_turn" && got.Rejections[0].Ordinal != 1 {
+				t.Fatalf("rejection must identify the outstanding start: %+v", got.Rejections)
+			}
+		})
+	}
+}
+
+func TestCompactionReplacementHistory(t *testing.T) {
+	call := map[string]any{"type": "function_call", "call_id": "call-1"}
+	output := map[string]any{"type": "function_call_output", "call_id": "call-1"}
+	for _, tc := range []struct {
+		name    string
+		payload map[string]any
+		code    string
+	}{
+		{"partial", map[string]any{"message": "partial"}, "compacted"},
+		{"missing window", map[string]any{"replacement_history": []any{}}, "compacted"},
+		{"negative window", map[string]any{"replacement_history": []any{}, "window_number": -1}, "compacted"},
+		{"null history", map[string]any{"replacement_history": nil, "window_number": 1}, "compacted"},
+		{"non-object item", map[string]any{"replacement_history": []any{nil}, "window_number": 1}, "response_item"},
+		{"missing item type", map[string]any{"replacement_history": []any{map[string]any{}}, "window_number": 1}, "response_item"},
+		{"orphan output", map[string]any{"replacement_history": []any{output}, "window_number": 1}, "orphan_tool_output"},
+		{"orphan call", map[string]any{"replacement_history": []any{call}, "window_number": 1}, "orphan_tool_call"},
+		{"duplicate call", map[string]any{"replacement_history": []any{call, call, output}, "window_number": 1}, "tool_call"},
+		{"wrong output kind", map[string]any{"replacement_history": []any{call, map[string]any{"type": "custom_tool_call_output", "call_id": "call-1"}}, "window_number": 1}, "orphan_tool_output"},
+		{"complete pair", map[string]any{"replacement_history": []any{call, output}, "window_number": 1}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := inspect(t, line(t, 0, "session_meta", meta())+line(t, 1, "compacted", tc.payload))
+			if tc.code != "" {
+				assertRejection(t, err, tc.code)
+			} else if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	// A call in the discarded prefix cannot satisfy a replacement output.
+	_, err := inspect(t, line(t, 0, "session_meta", meta())+line(t, 1, "response_item", call)+line(t, 2, "response_item", output)+line(t, 3, "compacted", map[string]any{"replacement_history": []any{output}, "window_number": 1}))
+	assertRejection(t, err, "orphan_tool_output")
 }

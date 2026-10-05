@@ -23,10 +23,10 @@ Changing a version label does not make a legacy file supported.
 | Source | `sessions/YYYY/MM/DD/rollout-<timestamp>-<UUIDv7>.jsonl`, with a single first `session_meta`, `history_mode: paginated`, and `cli_version: 0.160.0`. |
 | Ordinals | Every record has an unsigned integer ordinal, in non-decreasing order. Gaps are reported. |
 | Identity | Keep the source UUID. Refuse any matching filename under destination `sessions/` or `archived_sessions/`. |
-| Context | Preserve all bytes, unknown record types, tool calls/results, and compaction records. Reject orphan tool calls or outputs. |
+| Context | Preserve all bytes, unknown record types, tool calls/results, and complete compaction records. Reject incomplete compactions and orphan tool calls or outputs, including in replacement history. |
 | Lineage | Reject non-null `history_base`, fork/parent/subagent fields, subagent sources, additional metadata records, and `_<rolloutId>` filename suffixes. |
 | Relocation | No rewrites. The caller overrides cwd, runtime workspace roots, provider, and policy at resume. |
-| Quiescence | Acquire Codex's coordination lock, then try the thread's writer lock. An active writer is a typed rejection. Hold the thread lock through copying and digest rechecks. |
+| Quiescence | Acquire Codex's coordination lock, then try the thread's writer lock. An active writer or unfinished turn is a typed rejection. Hold the thread lock through copying and digest rechecks using the same home descriptor. |
 | Installation | Private staging, file fsync, hard-link publication without replacement, directory fsync, and digest verification. Hold Codex's coordination lock across publication. |
 | Omitted metadata | Thread name, git metadata, and memory mode are reported as omitted. Their paginated metadata lives outside the selected rollout. Any historical metadata already in the file remains byte-identical. |
 | Unsupported files | Legacy, compressed `.jsonl.zst`, archived sources, and multi-file lineage. |

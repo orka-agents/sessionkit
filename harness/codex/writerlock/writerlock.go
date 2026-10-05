@@ -25,14 +25,20 @@ func ValidThreadID(id string) bool { return uuidV7.MatchString(id) }
 // Source first holds coordination, then attempts the thread lock without
 // waiting. The returned lock stays held until all source reads finish.
 func Source(ctx context.Context, home, threadID string) (io.Closer, error) {
-	if !ValidThreadID(threadID) {
-		return nil, &model.RejectionError{Rejections: []model.Rejection{{Code: "thread_id", Message: "thread ID must be a canonical UUIDv7"}}}
-	}
 	root, err := fsx.OpenRoot(home)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = root.Close() }()
+	return SourceAt(ctx, root, threadID)
+}
+
+// SourceAt acquires the writer lock through the root used for source reads.
+// The caller must keep root open until those reads finish.
+func SourceAt(ctx context.Context, root *fsx.Root, threadID string) (io.Closer, error) {
+	if !ValidThreadID(threadID) {
+		return nil, &model.RejectionError{Rejections: []model.Rejection{{Code: "thread_id", Message: "thread ID must be a canonical UUIDv7"}}}
+	}
 	coordination, err := coordinate(ctx, root)
 	if err != nil {
 		return nil, err
