@@ -27,7 +27,7 @@ Changing a version label does not make a legacy file supported.
 | Lineage | Reject non-null `history_base`, fork/parent/subagent fields, subagent sources, additional metadata records, and `_<rolloutId>` filename suffixes. |
 | Relocation | No rewrites. The caller overrides cwd, runtime workspace roots, provider, and policy at resume. |
 | Quiescence | Acquire Codex's coordination lock, then try the thread's writer lock. An active writer or unfinished turn is a typed rejection. Hold the thread lock through copying and digest rechecks using the same home descriptor. |
-| Installation | Private staging, file fsync, hard-link publication without replacement, directory fsync, and digest verification. Hold Codex's coordination lock across publication. |
+| Installation | Private staging, file fsync, hard-link publication without replacement, directory fsync, and digest verification. Probe the destination thread's writer lock while holding Codex's coordination lock across publication. |
 | Omitted metadata | Thread name, git metadata, and memory mode are reported as omitted. Their paginated metadata lives outside the selected rollout. Any historical metadata already in the file remains byte-identical. |
 | Unsupported files | Legacy, compressed `.jsonl.zst`, archived sources, and multi-file lineage. |
 | Host | Linux and macOS, with Go 1.26 or later and a filesystem supporting `flock`, hard links, and directory fsync. |

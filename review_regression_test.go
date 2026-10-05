@@ -73,7 +73,7 @@ func TestCopyDigestBoundsReadRequest(t *testing.T) {
 
 func TestInspectTimeoutUsesBudgetError(t *testing.T) {
 	src, _, _ := testSource(t)
-	lock, err := writerlock.Publication(context.Background(), src.Root)
+	lock, err := writerlock.Publication(context.Background(), src.Root, src.ThreadID)
 	if err != nil {
 		t.Fatal(err)
 	}

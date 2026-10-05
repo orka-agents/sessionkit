@@ -35,8 +35,8 @@ var _ harness.Adapter = Adapter{}
 func (Adapter) LockSource(ctx context.Context, src model.Source, root *fsx.Root) (io.Closer, error) {
 	return writerlock.SourceAt(ctx, root, src.ThreadID)
 }
-func (Adapter) LockPublication(ctx context.Context, root string) (io.Closer, error) {
-	return writerlock.Publication(ctx, root)
+func (Adapter) LockPublication(ctx context.Context, root, threadID string) (io.Closer, error) {
+	return writerlock.Publication(ctx, root, threadID)
 }
 
 func reject(component, code, message string, ordinal uint64) *model.RejectionError {

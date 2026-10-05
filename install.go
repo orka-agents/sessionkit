@@ -46,7 +46,7 @@ func install(ctx context.Context, p Plan, hook installHook) (Receipt, error) {
 	defer cancel()
 	j, err := journal.Open(ctx, p.destination.JournalDir, p.OperationID)
 	if err != nil {
-		return unknown(err)
+		return unknown(operationError(b, err))
 	}
 	defer func() { _ = j.Close() }()
 	if len(p.Preserved) != 1 {
@@ -70,6 +70,7 @@ func install(ctx context.Context, p Plan, hook installHook) (Receipt, error) {
 	if state.Phase != "planned" && state.Phase != "staged" && state.Phase != "published" && state.Phase != "verified" {
 		return unknown(&IntegrityError{Component: "journal", Reason: "unrecognized phase"})
 	}
+	resumingStaged := state.Phase == "staged"
 	failBeforePublication := func(err error) (Receipt, error) {
 		if state.Phase == "planned" {
 			return receipt, err
@@ -166,7 +167,7 @@ func install(ctx context.Context, p Plan, hook installHook) (Receipt, error) {
 	if err != nil {
 		return failBeforePublication(err)
 	}
-	lock, err := a.LockPublication(ctx, p.destination.Root)
+	lock, err := a.LockPublication(ctx, p.destination.Root, p.ThreadID)
 	if err != nil {
 		return failBeforePublication(operationError(b, err))
 	}
@@ -174,7 +175,7 @@ func install(ctx context.Context, p Plan, hook installHook) (Receipt, error) {
 	rejectCollision := func(err error) (Receipt, error) {
 		// A staged retry may have linked already. Keep its witness until the
 		// caller resolves the competing identity.
-		if !fresh {
+		if resumingStaged {
 			return unknown(err)
 		}
 		// This attempt did not publish. Record that it can restage before

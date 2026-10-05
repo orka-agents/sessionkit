@@ -234,6 +234,9 @@ func capture(ctx context.Context, src Source, o CaptureOptions, afterCopy func()
 	if err = root.CheckPath(src.Root); err != nil {
 		return empty, err
 	}
+	if err = b.Check(); err != nil {
+		return empty, err
+	}
 	success = true
 	return Bundle{Dir: o.BundleDir, Manifest: manifest}, nil
 }
@@ -299,6 +302,9 @@ func openBundle(ctx context.Context, dir string, b *budget.Tracker) (Bundle, str
 	expected := makeManifest(m.Harness, m.SourceRelativePath, in, m.CreatedAt)
 	if !reflect.DeepEqual(m, expected) {
 		return empty, "", &IntegrityError{Component: "manifest", Reason: "manifest does not match rollout bytes and inspection"}
+	}
+	if err = root.CheckPath(dir); err != nil {
+		return empty, "", err
 	}
 	return Bundle{Dir: filepath.Clean(dir), Manifest: m}, sha(raw), nil
 }
@@ -479,6 +485,9 @@ func Verify(ctx context.Context, receipt Receipt, dst Destination) (Verification
 	}
 	if digest != receipt.TargetDigest {
 		return empty, &IntegrityError{Component: "rollout", Reason: "target digest mismatch"}
+	}
+	if err = root.CheckPath(dst.Root); err != nil {
+		return empty, err
 	}
 	return Verification{Valid: true, TargetPath: receipt.TargetPath, TargetDigest: digest, SizeBytes: size}, nil
 }

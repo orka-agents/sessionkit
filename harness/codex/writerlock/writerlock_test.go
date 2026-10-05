@@ -107,17 +107,19 @@ func startHolder(t *testing.T, home, mode string) func() {
 func TestActiveWriterAcrossProcesses(t *testing.T) {
 	home := canonicalTemp(t)
 	release := startHolder(t, home, "thread")
-	lock, err := Source(context.Background(), home, testID)
-	if lock != nil {
-		_ = lock.Close()
-		t.Fatal("acquired an active writer")
-	}
-	var active *model.ActiveWriterError
-	if !errors.As(err, &active) || active.ThreadID != testID {
-		t.Fatalf("got %v", err)
+	for _, acquire := range []func(context.Context, string, string) (io.Closer, error){Source, Publication} {
+		lock, err := acquire(context.Background(), home, testID)
+		if lock != nil {
+			_ = lock.Close()
+			t.Fatal("acquired an active writer")
+		}
+		var active *model.ActiveWriterError
+		if !errors.As(err, &active) || active.ThreadID != testID {
+			t.Fatalf("got %v", err)
+		}
 	}
 	release()
-	lock, err = Source(context.Background(), home, testID)
+	lock, err := Source(context.Background(), home, testID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +131,7 @@ func TestActiveWriterAcrossProcesses(t *testing.T) {
 func TestCoordinationWaitHonorsContext(t *testing.T) {
 	home := canonicalTemp(t)
 	release := startHolder(t, home, "coordination")
-	for _, acquire := range []func(context.Context) (io.Closer, error){func(ctx context.Context) (io.Closer, error) { return Source(ctx, home, testID) }, func(ctx context.Context) (io.Closer, error) { return Publication(ctx, home) }} {
+	for _, acquire := range []func(context.Context) (io.Closer, error){func(ctx context.Context) (io.Closer, error) { return Source(ctx, home, testID) }, func(ctx context.Context) (io.Closer, error) { return Publication(ctx, home, testID) }} {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 		lock, err := acquire(ctx)
 		cancel()
@@ -142,7 +144,7 @@ func TestCoordinationWaitHonorsContext(t *testing.T) {
 		}
 	}
 	release()
-	lock, err := Publication(context.Background(), home)
+	lock, err := Publication(context.Background(), home, testID)
 	if err != nil {
 		t.Fatal(err)
 	}

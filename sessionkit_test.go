@@ -461,7 +461,7 @@ func TestInstallHoldsCoordinationLockAndPreservesModes(t *testing.T) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 		defer cancel()
-		lock, e := writerlock.Publication(ctx, dst.Root)
+		lock, e := writerlock.Publication(ctx, dst.Root, plan.ThreadID)
 		if e == nil {
 			_ = lock.Close()
 			return fmt.Errorf("coordination lock absent at %s", phase)

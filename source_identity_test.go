@@ -19,6 +19,15 @@ import (
 type replacingSourceAdapter struct {
 	harness.Adapter
 	afterLock, afterSelect func() error
+	afterInspect           func() error
+}
+
+func (a replacingSourceAdapter) Inspect(ctx context.Context, input io.Reader, rel string, b *budget.Tracker) (Inspection, error) {
+	in, err := a.Adapter.Inspect(ctx, input, rel, b)
+	if err == nil && a.afterInspect != nil {
+		err = a.afterInspect()
+	}
+	return in, err
 }
 
 func (a replacingSourceAdapter) LockSource(ctx context.Context, src Source, root *fsx.Root) (io.Closer, error) {
@@ -105,6 +114,50 @@ func TestCaptureRejectsMovedBundlePath(t *testing.T) {
 	}
 	if _, err = os.Stat(dir); err != nil {
 		t.Fatalf("cleanup removed the replacement directory: %v", err)
+	}
+}
+
+func TestOpenBundleRejectsMovedPath(t *testing.T) {
+	_, bundle, _, _ := testBundle(t)
+	original := adapters[Codex]
+	adapters[Codex] = replacingSourceAdapter{Adapter: original, afterInspect: func() error {
+		if err := os.Rename(bundle.Dir, bundle.Dir+"-moved"); err != nil {
+			return err
+		}
+		return os.Mkdir(bundle.Dir, 0700)
+	}}
+	t.Cleanup(func() { adapters[Codex] = original })
+	_, err := OpenBundle(context.Background(), bundle.Dir, Budget{})
+	if err == nil || !strings.Contains(err.Error(), "moved or replaced") {
+		t.Fatalf("open must reject a replaced bundle path, got %v", err)
+	}
+}
+
+func TestInstallRejectsActiveDestinationWriter(t *testing.T) {
+	_, bundle, rel, _ := testBundle(t)
+	dst := testDestination(t)
+	plan, err := PlanInstall(context.Background(), bundle, dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := writerlock.Source(context.Background(), dst.Root, plan.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+	_, err = Install(context.Background(), plan)
+	var active *ActiveWriterError
+	if !errors.As(err, &active) {
+		t.Fatalf("expected destination writer rejection, got %v", err)
+	}
+	if _, err = os.Stat(filepath.Join(dst.Root, rel)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("install published beside an active writer: %v", err)
+	}
+	if err = writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = Install(context.Background(), plan); err != nil {
+		t.Fatalf("retry after the writer stopped: %v", err)
 	}
 }
 

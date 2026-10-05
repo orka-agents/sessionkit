@@ -66,56 +66,58 @@ func TestInstallCollisionRetainsRetryState(t *testing.T) {
 					competingPath = filepath.Join(dst.Root, "archived_sessions", "rollout-"+plan.ThreadID+".jsonl")
 				}
 				competingBytes := []byte("competing rollout")
-				injected := false
-				receipt, err := install(context.Background(), plan, func(phase string) error {
-					if phase != tc.phase {
-						return nil
+				for range 2 {
+					injected := false
+					receipt, err := install(context.Background(), plan, func(phase string) error {
+						if phase != tc.phase {
+							return nil
+						}
+						injected = true
+						if err := os.MkdirAll(filepath.Dir(competingPath), 0700); err != nil {
+							return err
+						}
+						return os.WriteFile(competingPath, competingBytes, 0600)
+					})
+					var collision *CollisionError
+					if !injected || !errors.As(err, &collision) {
+						t.Fatalf("expected injected collision, got %+v %v", receipt, err)
 					}
-					injected = true
-					if err := os.MkdirAll(filepath.Dir(competingPath), 0700); err != nil {
-						return err
+					expectedPhase := "planned"
+					if previouslyPublished {
+						expectedPhase = "staged"
+						var unknown *UnknownOutcomeError
+						if receipt.Outcome != Unknown || !errors.As(err, &unknown) {
+							t.Fatalf("prior publication must remain uncertain: %+v %v", receipt, err)
+						}
+						retained, err := os.Stat(witness)
+						if err != nil || !os.SameFile(originalWitness, retained) {
+							t.Fatalf("collision lost its publication witness: %v", err)
+						}
+					} else {
+						if receipt.Outcome != RejectedBeforeMutation {
+							t.Fatalf("unpublished collision must reject publication: %+v %v", receipt, err)
+						}
+						if _, err = os.Stat(witness); !errors.Is(err, os.ErrNotExist) {
+							t.Fatalf("unpublished collision retained its temp: %v", err)
+						}
 					}
-					return os.WriteFile(competingPath, competingBytes, 0600)
-				})
-				var collision *CollisionError
-				if !injected || !errors.As(err, &collision) {
-					t.Fatalf("expected injected collision, got %+v %v", receipt, err)
-				}
-				expectedPhase := "planned"
-				if previouslyPublished {
-					expectedPhase = "staged"
-					var unknown *UnknownOutcomeError
-					if receipt.Outcome != Unknown || !errors.As(err, &unknown) {
-						t.Fatalf("prior publication must remain uncertain: %+v %v", receipt, err)
+					var state struct {
+						Phase string `json:"phase"`
 					}
-					retained, err := os.Stat(witness)
-					if err != nil || !os.SameFile(originalWitness, retained) {
-						t.Fatalf("collision lost its publication witness: %v", err)
+					if err = json.Unmarshal(mustRead(t, filepath.Join(dst.JournalDir, plan.OperationID+".json")), &state); err != nil {
+						t.Fatal(err)
 					}
-				} else {
-					if receipt.Outcome != RejectedBeforeMutation {
-						t.Fatalf("fresh collision must reject publication: %+v %v", receipt, err)
+					if receipt.Phase != expectedPhase || state.Phase != expectedPhase {
+						t.Fatalf("receipt phase %q and journal phase %q, want %q", receipt.Phase, state.Phase, expectedPhase)
 					}
-					if _, err = os.Stat(witness); !errors.Is(err, os.ErrNotExist) {
-						t.Fatalf("fresh collision retained its temp: %v", err)
+					if !bytes.Equal(competingBytes, mustRead(t, competingPath)) {
+						t.Fatal("install changed the competing rollout")
+					}
+					if err = os.Remove(competingPath); err != nil {
+						t.Fatal(err)
 					}
 				}
-				var state struct {
-					Phase string `json:"phase"`
-				}
-				if err = json.Unmarshal(mustRead(t, filepath.Join(dst.JournalDir, plan.OperationID+".json")), &state); err != nil {
-					t.Fatal(err)
-				}
-				if receipt.Phase != expectedPhase || state.Phase != expectedPhase {
-					t.Fatalf("receipt phase %q and journal phase %q, want %q", receipt.Phase, state.Phase, expectedPhase)
-				}
-				if !bytes.Equal(competingBytes, mustRead(t, competingPath)) {
-					t.Fatal("install changed the competing rollout")
-				}
-				if err = os.Remove(competingPath); err != nil {
-					t.Fatal(err)
-				}
-				receipt, err = Install(context.Background(), plan)
+				receipt, err := Install(context.Background(), plan)
 				if err != nil || receipt.Outcome != Installed {
 					t.Fatalf("same-plan retry after collision removal: %+v %v", receipt, err)
 				}

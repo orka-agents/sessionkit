@@ -51,11 +51,8 @@ func SourceAt(ctx context.Context, root *fsx.Root, threadID string) (io.Closer, 
 	if err != nil {
 		return nil, err
 	}
-	if err = unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+	if err = lockWriter(file, threadID); err != nil {
 		_ = file.Close()
-		if errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) {
-			return nil, &model.ActiveWriterError{ThreadID: threadID}
-		}
 		return nil, err
 	}
 	// Leave the inode in place when closing. Codex removes stale locks under
@@ -63,9 +60,12 @@ func SourceAt(ctx context.Context, root *fsx.Root, threadID string) (io.Closer, 
 	return file, nil
 }
 
-// Publication prevents another cooperating writer from beginning publication
-// until the caller closes the returned lock.
-func Publication(ctx context.Context, home string) (io.Closer, error) {
+// Publication probes the thread's writer lock while holding coordination, then
+// keeps coordination held until the caller finishes publication.
+func Publication(ctx context.Context, home, threadID string) (io.Closer, error) {
+	if !ValidThreadID(threadID) {
+		return nil, &model.RejectionError{Rejections: []model.Rejection{{Code: "thread_id", Message: "thread ID must be a canonical UUIDv7"}}}
+	}
 	root, err := fsx.OpenRoot(home)
 	if err != nil {
 		return nil, err
@@ -75,7 +75,26 @@ func Publication(ctx context.Context, home string) (io.Closer, error) {
 	if err != nil {
 		return nil, err
 	}
+	probe, err := root.Open(Directory + "/" + threadID + ".lock")
+	if err == nil {
+		err = lockWriter(probe, threadID)
+		_ = probe.Close()
+	} else if errors.Is(err, os.ErrNotExist) {
+		err = nil
+	}
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
 	return file, nil
+}
+
+func lockWriter(file *os.File, threadID string) error {
+	err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+	if errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) {
+		return &model.ActiveWriterError{ThreadID: threadID}
+	}
+	return err
 }
 
 func coordinate(ctx context.Context, root *fsx.Root) (*os.File, error) {
