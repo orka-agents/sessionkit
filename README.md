@@ -103,6 +103,8 @@ Keep bundle files private and unchanged during handoff operations.
 `Bundle.Manifest` is a verification snapshot. `PlanInstall` revalidates the files
 and `Install` checks the resulting plan's frozen digest before publication.
 Concurrent edits to bundle files require caller-owned coordination.
+Use the pinned client to produce native payloads. Hand-edited nested payloads
+require separate native schema validation.
 
 `PlanInstall` freezes the verified manifest digest and original relative path.
 It does not recompute date directories from timestamps, because Codex's directory

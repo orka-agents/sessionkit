@@ -245,13 +245,24 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 				inspection.Records.ToolPairs++
 			}
 		case "compacted":
-			if payload == nil {
-				return fail(reject(relative, "compacted", "compaction payload must be an object", ordinal))
+			if _, ok := payload["message"].(string); !ok {
+				return fail(reject(relative, "compacted", "compaction requires a string message", ordinal))
 			}
 			history, complete := payload["replacement_history"].([]any)
 			_, window := unsigned(payload["window_number"])
 			if !complete || !window {
 				return fail(reject(relative, "compacted", "compaction requires replacement history and an unsigned window number", ordinal))
+			}
+			if value := payload["replacement_history_metadata"]; value != nil {
+				metadata, ok := value.([]any)
+				if !ok || len(metadata) != len(history) {
+					return fail(reject(relative, "compacted", "replacement history metadata must match the history array", ordinal))
+				}
+				for _, entry := range metadata {
+					if _, ok := entry.(map[string]any); !ok {
+						return fail(reject(relative, "compacted", "replacement history metadata entries must be objects", ordinal))
+					}
+				}
 			}
 			replacementCalls := make(map[string]toolCall)
 			for _, item := range history {
@@ -361,6 +372,15 @@ func responseItem(payload map[string]any, pending map[string]toolCall, component
 		if _, exists := pending[callID]; exists {
 			return reject(component, "tool_call", "tool call ID is already pending", ordinal)
 		}
+		fields := []string{"name", "arguments"}
+		if kind == "custom_tool_call" {
+			fields = []string{"name", "input"}
+		}
+		for _, field := range fields {
+			if _, ok := payload[field].(string); !ok {
+				return reject(component, "response_item", "tool call requires string name and input fields", ordinal)
+			}
+		}
 		pending[callID] = toolCall{kind, ordinal}
 	case "function_call_output", "custom_tool_call_output":
 		callID, ok := payload["call_id"].(string)
@@ -368,9 +388,50 @@ func responseItem(payload map[string]any, pending map[string]toolCall, component
 		if !ok || !exists || call.kind+"_output" != kind {
 			return reject(component, "orphan_tool_output", "tool output has no matching pending call", ordinal)
 		}
+		if !toolOutput(payload["output"]) {
+			return reject(component, "response_item", "tool output must be text or native content items", ordinal)
+		}
 		delete(pending, callID)
 	}
 	return nil
+}
+
+func toolOutput(value any) bool {
+	if _, ok := value.(string); ok {
+		return true
+	}
+	items, ok := value.([]any)
+	if !ok {
+		return false
+	}
+	for _, value := range items {
+		item, _ := value.(map[string]any)
+		field := ""
+		switch item["type"] {
+		case "input_text":
+			field = "text"
+		case "input_audio":
+			field = "audio_url"
+		case "encrypted_content":
+			field = "encrypted_content"
+		case "input_image":
+			_, url := item["image_url"].(string)
+			_, file := item["file_id"].(string)
+			if !url && !file {
+				return false
+			}
+			if detail := item["detail"]; detail != nil && detail != "auto" && detail != "low" && detail != "high" && detail != "original" {
+				return false
+			}
+			continue
+		default:
+			return false
+		}
+		if _, ok := item[field].(string); !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func parseError(component string, err error) error {

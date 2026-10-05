@@ -90,7 +90,7 @@ func TestProfileRejections(t *testing.T) {
 		{name: "subagent string", code: "subagent", mutate: func(m map[string]any) { m["source"] = "SubAgent" }},
 		{name: "second metadata", code: "session_meta", suffix: line(t, 1, "session_meta", meta())},
 		{name: "orphan output", code: "orphan_tool_output", suffix: line(t, 1, "response_item", map[string]any{"type": "function_call_output", "call_id": "absent", "output": "private body"})},
-		{name: "orphan call", code: "orphan_tool_call", suffix: line(t, 1, "response_item", map[string]any{"type": "custom_tool_call", "call_id": "absent", "input": "private body"})},
+		{name: "orphan call", code: "orphan_tool_call", suffix: line(t, 1, "response_item", map[string]any{"type": "custom_tool_call", "call_id": "absent", "name": "test", "input": "private body"})},
 		{name: "missing final ordinal", code: "ordinal", suffix: `{"type":"response_item","payload":{"type":"message"}}` + "\n"},
 		{name: "fractional ordinal", code: "ordinal", suffix: `{"ordinal":1.5,"type":"future_record"}` + "\n"},
 		{name: "duplicate", code: "duplicate_key", suffix: `{"ordinal":1,"type":"future_record","private key":0,"private key":1}` + "\n"},
@@ -120,8 +120,8 @@ func TestCustomToolsCompactionAndWarnings(t *testing.T) {
 	metadata := meta()
 	metadata["git"] = map[string]any{"repository_url": "https://user:secret@example.test/repo"}
 	metadata["runtime_workspace_roots"] = []string{"/outside"}
-	data := line(t, 0, "session_meta", metadata) + line(t, 1, "response_item", map[string]any{"type": "custom_tool_call", "call_id": "custom", "input": "data"}) + line(t, 2, "response_item", map[string]any{"type": "custom_tool_call_output", "call_id": "custom", "output": "done"}) +
-		line(t, 3, "compacted", map[string]any{"replacement_history": []any{}, "window_number": 1, "encrypted_content": "secret"})
+	data := line(t, 0, "session_meta", metadata) + line(t, 1, "response_item", map[string]any{"type": "custom_tool_call", "call_id": "custom", "name": "test", "input": "data"}) + line(t, 2, "response_item", map[string]any{"type": "custom_tool_call_output", "call_id": "custom", "output": "done"}) +
+		line(t, 3, "compacted", map[string]any{"message": "summary", "replacement_history": []any{}, "window_number": 1, "encrypted_content": "secret"})
 	got, err := inspect(t, data)
 	if err != nil {
 		t.Fatal(err)
@@ -240,24 +240,31 @@ func TestTurnLifecycle(t *testing.T) {
 }
 
 func TestCompactionReplacementHistory(t *testing.T) {
-	call := map[string]any{"type": "function_call", "call_id": "call-1"}
-	output := map[string]any{"type": "function_call_output", "call_id": "call-1"}
+	call := map[string]any{"type": "function_call", "call_id": "call-1", "name": "test", "arguments": "{}"}
+	output := map[string]any{"type": "function_call_output", "call_id": "call-1", "output": "done"}
 	for _, tc := range []struct {
 		name    string
 		payload map[string]any
 		code    string
 	}{
 		{"partial", map[string]any{"message": "partial"}, "compacted"},
-		{"missing window", map[string]any{"replacement_history": []any{}}, "compacted"},
-		{"negative window", map[string]any{"replacement_history": []any{}, "window_number": -1}, "compacted"},
-		{"null history", map[string]any{"replacement_history": nil, "window_number": 1}, "compacted"},
-		{"non-object item", map[string]any{"replacement_history": []any{nil}, "window_number": 1}, "response_item"},
-		{"missing item type", map[string]any{"replacement_history": []any{map[string]any{}}, "window_number": 1}, "response_item"},
-		{"orphan output", map[string]any{"replacement_history": []any{output}, "window_number": 1}, "orphan_tool_output"},
-		{"orphan call", map[string]any{"replacement_history": []any{call}, "window_number": 1}, "orphan_tool_call"},
-		{"duplicate call", map[string]any{"replacement_history": []any{call, call, output}, "window_number": 1}, "tool_call"},
-		{"wrong output kind", map[string]any{"replacement_history": []any{call, map[string]any{"type": "custom_tool_call_output", "call_id": "call-1"}}, "window_number": 1}, "orphan_tool_output"},
-		{"complete pair", map[string]any{"replacement_history": []any{call, output}, "window_number": 1}, ""},
+		{"missing message", map[string]any{"window_number": 1, "replacement_history": []any{}}, "compacted"},
+		{"numeric message", map[string]any{"message": 0, "window_number": 1, "replacement_history": []any{}}, "compacted"},
+		{"missing window", map[string]any{"message": "summary", "replacement_history": []any{}}, "compacted"},
+		{"negative window", map[string]any{"message": "summary", "replacement_history": []any{}, "window_number": -1}, "compacted"},
+		{"null history", map[string]any{"message": "summary", "replacement_history": nil, "window_number": 1}, "compacted"},
+		{"non-object item", map[string]any{"message": "summary", "replacement_history": []any{nil}, "window_number": 1}, "response_item"},
+		{"missing item type", map[string]any{"message": "summary", "replacement_history": []any{map[string]any{}}, "window_number": 1}, "response_item"},
+		{"orphan output", map[string]any{"message": "summary", "replacement_history": []any{output}, "window_number": 1}, "orphan_tool_output"},
+		{"orphan call", map[string]any{"message": "summary", "replacement_history": []any{call}, "window_number": 1}, "orphan_tool_call"},
+		{"duplicate call", map[string]any{"message": "summary", "replacement_history": []any{call, call, output}, "window_number": 1}, "tool_call"},
+		{"wrong output kind", map[string]any{"message": "summary", "replacement_history": []any{call, map[string]any{"type": "custom_tool_call_output", "call_id": "call-1"}}, "window_number": 1}, "orphan_tool_output"},
+		{"complete pair", map[string]any{"message": "summary", "replacement_history": []any{call, output}, "window_number": 1}, ""},
+		{"metadata is scalar", map[string]any{"message": "summary", "replacement_history": []any{}, "window_number": 1, "replacement_history_metadata": "invalid"}, "compacted"},
+		{"metadata count mismatch", map[string]any{"message": "summary", "replacement_history": []any{call, output}, "window_number": 1, "replacement_history_metadata": []any{}}, "compacted"},
+		{"metadata entry is scalar", map[string]any{"message": "summary", "replacement_history": []any{call, output}, "window_number": 1, "replacement_history_metadata": []any{0, 0}}, "compacted"},
+		{"matching metadata", map[string]any{"message": "summary", "replacement_history": []any{call, output}, "window_number": 1, "replacement_history_metadata": []any{map[string]any{}, map[string]any{}}}, ""},
+		{"null metadata", map[string]any{"message": "summary", "replacement_history": []any{call, output}, "window_number": 1, "replacement_history_metadata": nil}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := inspect(t, line(t, 0, "session_meta", meta())+line(t, 1, "compacted", tc.payload))
@@ -269,7 +276,7 @@ func TestCompactionReplacementHistory(t *testing.T) {
 		})
 	}
 	// A call in the discarded prefix cannot satisfy a replacement output.
-	_, err := inspect(t, line(t, 0, "session_meta", meta())+line(t, 1, "response_item", call)+line(t, 2, "response_item", output)+line(t, 3, "compacted", map[string]any{"replacement_history": []any{output}, "window_number": 1}))
+	_, err := inspect(t, line(t, 0, "session_meta", meta())+line(t, 1, "response_item", call)+line(t, 2, "response_item", output)+line(t, 3, "compacted", map[string]any{"message": "summary", "replacement_history": []any{output}, "window_number": 1}))
 	assertRejection(t, err, "orphan_tool_output")
 }
 
@@ -280,12 +287,57 @@ func TestUnvalidatedToolShapesReject(t *testing.T) {
 				item := map[string]any{"type": kind, "call_id": "call-1"}
 				data := line(t, 0, "session_meta", meta())
 				if compacted {
-					data += line(t, 1, "compacted", map[string]any{"replacement_history": []any{item}, "window_number": 1})
+					data += line(t, 1, "compacted", map[string]any{"message": "summary", "replacement_history": []any{item}, "window_number": 1})
 				} else {
 					data += line(t, 1, "response_item", item)
 				}
 				_, err := inspect(t, data)
 				assertRejection(t, err, "unsupported_tool")
+			})
+		}
+	}
+}
+
+func TestSupportedToolFields(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		call   map[string]any
+		output any
+		valid  bool
+	}{
+		{"missing name", map[string]any{"type": "function_call", "arguments": "{}"}, "done", false},
+		{"missing arguments", map[string]any{"type": "function_call", "name": "test"}, "done", false},
+		{"numeric arguments", map[string]any{"type": "function_call", "name": "test", "arguments": 1}, "done", false},
+		{"numeric custom input", map[string]any{"type": "custom_tool_call", "name": "test", "input": 1}, "done", false},
+		{"numeric output", nil, 1, false},
+		{"malformed output content", nil, []any{map[string]any{"type": "input_text", "text": 1}}, false},
+		{"malformed image", nil, []any{map[string]any{"type": "input_image", "image_url": 1}}, false},
+		{"invalid image detail", nil, []any{map[string]any{"type": "input_image", "file_id": "image", "detail": "invalid"}}, false},
+		{"text output", nil, "done", true},
+		{"structured output", nil, []any{map[string]any{"type": "input_text", "text": "done"}, map[string]any{"type": "input_image", "file_id": "image", "detail": "high"}}, true},
+	} {
+		for _, replacement := range []bool{false, true} {
+			t.Run(tc.name+map[bool]string{false: "/rollout", true: "/replacement"}[replacement], func(t *testing.T) {
+				call := tc.call
+				if call == nil {
+					call = map[string]any{"type": "function_call", "name": "test", "arguments": "{}"}
+				}
+				call["call_id"] = "call-1"
+				output := map[string]any{"type": call["type"].(string) + "_output", "call_id": "call-1", "output": tc.output}
+				data := line(t, 0, "session_meta", meta())
+				if replacement {
+					data += line(t, 1, "compacted", map[string]any{"message": "summary", "replacement_history": []any{call, output}, "window_number": 1})
+				} else {
+					data += line(t, 1, "response_item", call) + line(t, 2, "response_item", output)
+				}
+				_, err := inspect(t, data)
+				if tc.valid {
+					if err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					assertRejection(t, err, "response_item")
+				}
 			})
 		}
 	}
