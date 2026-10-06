@@ -308,6 +308,49 @@ func TestVerifyRejectsTargetParentReplacement(t *testing.T) {
 	}
 }
 
+func TestVerifyCoordinatesWithNativeWriters(t *testing.T) {
+	_, bundle, _, _ := testBundle(t)
+	dst := testDestination(t)
+	plan, err := PlanInstall(context.Background(), bundle, dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := Install(context.Background(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := writerlock.Source(context.Background(), dst.Root, plan.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := Verify(context.Background(), receipt, dst)
+	var active *ActiveWriterError
+	if result.Valid || !errors.As(err, &active) {
+		_ = writer.Close()
+		t.Fatalf("verification accepted an active writer: %+v %v", result, err)
+	}
+	retry, err := Install(context.Background(), plan)
+	_ = writer.Close()
+	if retry.Outcome != Unknown || !errors.As(err, &active) {
+		t.Fatalf("installation retry accepted an active writer: %+v %v", retry, err)
+	}
+	result, err = verify(context.Background(), receipt, dst, func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+		defer cancel()
+		writer, err := writerlock.Source(ctx, dst.Root, plan.ThreadID)
+		if writer != nil {
+			_ = writer.Close()
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("writer was not blocked during verification: %v", err)
+		}
+		return nil
+	})
+	if err != nil || !result.Valid {
+		t.Fatalf("coordinated verification: %+v %v", result, err)
+	}
+}
+
 func TestJournalReplacementDuringPublicationDoesNotReportInstalled(t *testing.T) {
 	_, bundle, _, _ := testBundle(t)
 	dst := testDestination(t)

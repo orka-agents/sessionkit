@@ -146,10 +146,17 @@ func TestCapturePreservesSourceAndRoundTrip(t *testing.T) {
 func TestCollisionLiveAndArchived(t *testing.T) {
 	ctx := context.Background()
 	src, bundle, rel, raw := testBundle(t)
-	for _, base := range []string{"sessions", "archived_sessions"} {
-		t.Run(base, func(t *testing.T) {
+	for _, entry := range []struct {
+		base      string
+		uppercase bool
+	}{{"sessions", false}, {"sessions", true}, {"archived_sessions", false}, {"archived_sessions", true}} {
+		t.Run(fmt.Sprintf("%s/uppercase_%t", entry.base, entry.uppercase), func(t *testing.T) {
 			dst := testDestination(t)
-			collisionPath := filepath.Join(dst.Root, strings.Replace(rel, "sessions", base, 1))
+			name := strings.Replace(rel, "sessions", entry.base, 1)
+			if entry.uppercase {
+				name = strings.ReplaceAll(name, src.ThreadID, strings.ToUpper(src.ThreadID))
+			}
+			collisionPath := filepath.Join(dst.Root, name)
 			if err := os.MkdirAll(filepath.Dir(collisionPath), 0700); err != nil {
 				t.Fatal(err)
 			}

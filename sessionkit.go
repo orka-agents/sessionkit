@@ -416,12 +416,13 @@ func validateDestination(dst Destination) error {
 }
 
 func collision(root *fsx.Root, id, allowed string, b *budget.Tracker) error {
+	id = strings.ToLower(id)
 	for _, base := range []string{"sessions", "archived_sessions"} {
 		err := root.WalkFiles(base, func(rel string, isDir bool) error {
 			if err := b.Node(); err != nil {
 				return err
 			}
-			if !isDir && rel != allowed && strings.Contains(path.Base(rel), id) {
+			if !isDir && rel != allowed && strings.Contains(strings.ToLower(path.Base(rel)), id) {
 				return &CollisionError{ThreadID: id, TargetPath: rel}
 			}
 			return nil
@@ -502,20 +503,32 @@ func verify(ctx context.Context, receipt Receipt, dst Destination, hook func() e
 	if err := b.Check(); err != nil {
 		return empty, err
 	}
+	ctx, cancel := operationContext(ctx, b)
+	defer cancel()
 	if err := validateDestination(dst); err != nil {
 		return empty, err
 	}
 	if receipt.Outcome != Installed || receipt.Phase != "verified" {
 		return empty, reject("receipt", "receipt does not describe a verified installation")
 	}
-	if !fsx.ValidPath(receipt.TargetPath) {
-		return empty, reject("receipt", "receipt target path must be a valid relative path")
+	threadID, err := codex.ValidatePath(receipt.TargetPath)
+	if err != nil {
+		return empty, err
 	}
 	root, err := fsx.OpenRoot(dst.Root)
 	if err != nil {
 		return empty, err
 	}
 	defer func() { _ = root.Close() }()
+	a, err := adapterFor(dst.Harness)
+	if err != nil {
+		return empty, err
+	}
+	lock, err := a.LockPublication(ctx, root, threadID)
+	if err != nil {
+		return empty, operationError(b, err)
+	}
+	defer func() { _ = lock.Close() }()
 	parent, err := root.Sub(path.Dir(receipt.TargetPath))
 	if err != nil {
 		return empty, err

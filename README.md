@@ -89,7 +89,8 @@ without following symlinks. Resolve a platform alias such as macOS `/tmp` before
 passing a caller-selected directory. Use caller-owned private roots; SessionKit
 creates files with mode 0600 and directories with mode 0700, and leaves existing
 directory modes alone. Inspection changes only lock coordination files, never
-the rollout. Planning performs no writes.
+the rollout. Verification also holds Codex's writer coordination and rejects an
+active writer. Planning performs no writes.
 
 `OpenBundle` checks the manifest schema, rejects undeclared entries, re-inspects
 the rollout, and verifies that every summary and component digest matches.

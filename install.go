@@ -87,6 +87,15 @@ func install(ctx context.Context, p Plan, hook installHook) (Receipt, error) {
 	}
 	defer func() { _ = root.Close() }()
 	if state.Phase == "published" || state.Phase == "verified" {
+		a, err := adapterFor(p.destination.Harness)
+		if err != nil {
+			return unknown(err)
+		}
+		lock, err := a.LockPublication(ctx, root, p.ThreadID)
+		if err != nil {
+			return unknown(operationError(b, err))
+		}
+		defer func() { _ = lock.Close() }()
 		return finishInstall(ctx, p, receipt, state, j, root, b, hit)
 	}
 	checked, digest, err := openBundle(ctx, p.bundleDir, b)
