@@ -269,6 +269,45 @@ func TestDestinationReplacementAfterJournalVerificationDoesNotReportInstalled(t 
 	}
 }
 
+func TestVerifyRejectsTargetParentReplacement(t *testing.T) {
+	_, bundle, rel, _ := testBundle(t)
+	dst := testDestination(t)
+	plan, err := PlanInstall(context.Background(), bundle, dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := Install(context.Background(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := filepath.Join(dst.Root, filepath.Dir(rel))
+	moved := parent + "-moved"
+	result, err := verify(context.Background(), receipt, dst, func() error {
+		if err := os.Rename(parent, moved); err != nil {
+			return err
+		}
+		return os.Mkdir(parent, 0700)
+	})
+	if result.Valid || err == nil {
+		t.Fatalf("verification accepted target in moved parent: %+v %v", result, err)
+	}
+	if err := os.Remove(parent); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(moved, parent); err != nil {
+		t.Fatal(err)
+	}
+	result, err = Verify(context.Background(), receipt, dst)
+	if err != nil || !result.Valid {
+		t.Fatalf("verification after restoring parent: %+v %v", result, err)
+	}
+	receipt.TargetPath = "missing/../" + receipt.TargetPath
+	result, err = Verify(context.Background(), receipt, dst)
+	if result.Valid || err == nil {
+		t.Fatalf("verification accepted noncanonical receipt path: %+v %v", result, err)
+	}
+}
+
 func TestJournalReplacementDuringPublicationDoesNotReportInstalled(t *testing.T) {
 	_, bundle, _, _ := testBundle(t)
 	dst := testDestination(t)

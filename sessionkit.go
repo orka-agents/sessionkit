@@ -493,6 +493,10 @@ func planSeal(p Plan) string {
 
 // Verification compares the rollout against the receipt without starting Codex.
 func Verify(ctx context.Context, receipt Receipt, dst Destination) (Verification, error) {
+	return verify(ctx, receipt, dst, nil)
+}
+
+func verify(ctx context.Context, receipt Receipt, dst Destination, hook func() error) (Verification, error) {
 	var empty Verification
 	b := budget.New(ctx, Budget{})
 	if err := b.Check(); err != nil {
@@ -504,19 +508,35 @@ func Verify(ctx context.Context, receipt Receipt, dst Destination) (Verification
 	if receipt.Outcome != Installed || receipt.Phase != "verified" {
 		return empty, reject("receipt", "receipt does not describe a verified installation")
 	}
+	if !fsx.ValidPath(receipt.TargetPath) {
+		return empty, reject("receipt", "receipt target path must be a valid relative path")
+	}
 	root, err := fsx.OpenRoot(dst.Root)
 	if err != nil {
 		return empty, err
 	}
 	defer func() { _ = root.Close() }()
-	digest, size, err := digestFile(root, receipt.TargetPath, b)
+	parent, err := root.Sub(path.Dir(receipt.TargetPath))
+	if err != nil {
+		return empty, err
+	}
+	defer func() { _ = parent.Close() }()
+	digest, size, err := digestFile(parent, path.Base(receipt.TargetPath), b)
 	if err != nil {
 		return empty, err
 	}
 	if digest != receipt.TargetDigest {
 		return empty, &IntegrityError{Component: "rollout", Reason: "target digest mismatch"}
 	}
+	if hook != nil {
+		if err = hook(); err != nil {
+			return empty, err
+		}
+	}
 	if err = root.CheckPath(dst.Root); err != nil {
+		return empty, err
+	}
+	if err = parent.CheckPath(filepath.Join(dst.Root, filepath.FromSlash(path.Dir(receipt.TargetPath)))); err != nil {
 		return empty, err
 	}
 	if err = b.Check(); err != nil {

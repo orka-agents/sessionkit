@@ -126,6 +126,8 @@ func TestProfileRejections(t *testing.T) {
 		{name: "internal guardian", code: "lineage", mutate: func(m map[string]any) { m["source"] = map[string]any{"internal": "guardian"} }},
 		{name: "internal memory consolidation", code: "lineage", mutate: func(m map[string]any) { m["source"] = map[string]any{"internal": "memory_consolidation"} }},
 		{name: "subagent thread source", code: "subagent", mutate: func(m map[string]any) { m["thread_source"] = "subagent" }},
+		{name: "guardian thread source", code: "lineage", mutate: func(m map[string]any) { m["thread_source"] = "guardian_review" }},
+		{name: "memory consolidation thread source", code: "lineage", mutate: func(m map[string]any) { m["thread_source"] = "memory_consolidation" }},
 		{name: "subagent nickname", code: "subagent", mutate: func(m map[string]any) { m["agent_nickname"] = "worker" }},
 		{name: "subagent role", code: "subagent", mutate: func(m map[string]any) { m["agent_role"] = "worker" }},
 		{name: "subagent role alias", code: "subagent", mutate: func(m map[string]any) { m["agent_type"] = "worker" }},

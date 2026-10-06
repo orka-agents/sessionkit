@@ -603,8 +603,13 @@ func metadata(out *model.Inspection, payload map[string]any, component string, o
 			return bad("subagent", "subagent metadata is not supported")
 		}
 	}
-	if source, ok := payload["thread_source"].(string); ok && strings.EqualFold(source, "subagent") {
-		return bad("subagent", "subagent sessions are not supported")
+	if source, ok := payload["thread_source"].(string); ok {
+		switch strings.ToLower(source) {
+		case "subagent":
+			return bad("subagent", "subagent sessions are not supported")
+		case "guardian_review", "memory_consolidation":
+			return bad("lineage", "internal sessions are not supported")
+		}
 	}
 	source := payload["source"]
 	if text, ok := source.(string); ok && strings.EqualFold(text, "subagent") {
