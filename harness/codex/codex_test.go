@@ -268,6 +268,10 @@ func TestCompactionExecCommandCompletion(t *testing.T) {
 			}
 		})
 	}
+	_, err := inspect(t, line(t, 0, "session_meta", meta())+
+		line(t, 1, "compacted", map[string]any{"message": "summary", "window_number": 1, "replacement_history": []any{call, output, call, output}})+
+		line(t, 2, "event_msg", completion))
+	assertRejection(t, err, "active_command")
 }
 
 func TestCustomToolsCompactionAndWarnings(t *testing.T) {
@@ -456,7 +460,13 @@ func TestCompactionReplacementHistory(t *testing.T) {
 }
 
 func TestUnvalidatedToolShapesReject(t *testing.T) {
-	for _, kind := range []string{"local_shell_call", "tool_search_call", "tool_search_output"} {
+	for _, tc := range []struct{ kind, code string }{
+		{"local_shell_call", "unsupported_tool"},
+		{"tool_search_call", "unsupported_tool"},
+		{"tool_search_output", "unsupported_tool"},
+		{"agent_message", "subagent"},
+	} {
+		kind := tc.kind
 		for _, compacted := range []bool{false, true} {
 			t.Run(kind+map[bool]string{false: "/rollout", true: "/replacement"}[compacted], func(t *testing.T) {
 				item := map[string]any{"type": kind, "call_id": "call-1"}
@@ -467,7 +477,7 @@ func TestUnvalidatedToolShapesReject(t *testing.T) {
 					data += line(t, 1, "response_item", item)
 				}
 				_, err := inspect(t, data)
-				assertRejection(t, err, "unsupported_tool")
+				assertRejection(t, err, tc.code)
 			})
 		}
 	}

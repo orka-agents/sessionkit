@@ -280,6 +280,7 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 				}
 			}
 			replacementCalls := make(map[string]toolCall)
+			replacementCommands := make(map[string]bool)
 			for _, item := range history {
 				payload, _ := item.(map[string]any)
 				if err := responseItem(payload, replacementCalls, relative, ordinal); err != nil {
@@ -287,6 +288,10 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 				}
 				if payload["type"] == "function_call" && payload["name"] == "exec_command" {
 					id := payload["call_id"].(string)
+					if replacementCommands[id] {
+						return fail(reject(relative, "active_command", "replacement history reuses an exec command call ID", ordinal))
+					}
+					replacementCommands[id] = true
 					if _, active := commands[id]; !active && !completedCommands[id] {
 						commands[id] = ordinal
 					}
@@ -414,6 +419,8 @@ func responseItem(payload map[string]any, pending map[string]toolCall, component
 		return reject(component, "response_item", "response item type must be a nonempty string", ordinal)
 	}
 	switch kind {
+	case "agent_message":
+		return reject(component, "subagent", "inter-agent response items are not supported", ordinal)
 	case "local_shell_call", "tool_search_call", "tool_search_output":
 		return reject(component, "unsupported_tool", "tool record shape is not supported by this profile", ordinal)
 	case "function_call", "custom_tool_call":

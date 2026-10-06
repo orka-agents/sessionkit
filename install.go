@@ -193,7 +193,7 @@ func install(ctx context.Context, p Plan, hook installHook) (Receipt, error) {
 		return rejectUnpublished(err)
 	}
 	if err = root.CheckPath(p.destination.Root); err != nil {
-		return unknown(err)
+		return rejectUnpublished(err)
 	}
 	target, targetErr := root.Open(p.TargetPath)
 	if targetErr == nil {
@@ -231,7 +231,7 @@ func install(ctx context.Context, p Plan, hook installHook) (Receipt, error) {
 			return unknown(err)
 		}
 		if err = root.CheckPath(p.destination.Root); err != nil {
-			return unknown(err)
+			return rejectUnpublished(err)
 		}
 		if err = root.Link(state.TempPath, p.TargetPath); err != nil {
 			if errors.Is(err, os.ErrExist) {
