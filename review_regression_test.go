@@ -279,6 +279,44 @@ func TestDestinationVersionIsRequired(t *testing.T) {
 	}
 }
 
+func TestSlowCleanupReportsItsBudget(t *testing.T) {
+	_, bundle, _, _ := testBundle(t)
+	dst := testDestination(t)
+	plan, err := PlanInstall(context.Background(), bundle, dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	receipt, err := install(ctx, plan, func(phase string) error {
+		switch phase {
+		case "staged":
+			cancel()
+		case "cleanup_journal":
+			time.Sleep(1100 * time.Millisecond)
+		}
+		return nil
+	})
+	var exceeded *BudgetError
+	if !errors.As(err, &exceeded) || exceeded.Limit != "timeout" || receipt.Outcome != RejectedBeforeMutation || receipt.Phase != "planned" {
+		t.Fatalf("slow cleanup did not report its budget: %+v %v", receipt, err)
+	}
+	var state journal.State
+	if err := json.Unmarshal(mustRead(t, filepath.Join(dst.JournalDir, plan.OperationID+".json")), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Phase != "planned" {
+		t.Fatalf("journal did not reset: %+v", state)
+	}
+	if _, err := os.Stat(filepath.Join(dst.Root, state.TempPath)); err != nil {
+		t.Fatalf("cleanup timeout lost staging: %v", err)
+	}
+	receipt, err = Install(context.Background(), plan)
+	if err != nil || receipt.Outcome != Installed {
+		t.Fatalf("retry after cleanup timeout: %+v %v", receipt, err)
+	}
+}
+
 func TestCancellationBeforePublicationUsesCleanupBudget(t *testing.T) {
 	_, bundle, rel, raw := testBundle(t)
 	dst := testDestination(t)

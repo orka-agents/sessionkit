@@ -469,6 +469,45 @@ func TestMessageRequiresNativeContent(t *testing.T) {
 	}
 }
 
+func TestResponseMetadataLineage(t *testing.T) {
+	retained := map[string]any{"id": map[string]any{"message_id": "message-1", "turn_id": "turn-1", "role": "user"}, "revision": testThread, "complete": true}
+	for _, tc := range []struct {
+		name     string
+		metadata map[string]any
+		code     string
+	}{
+		{"inherited", map[string]any{"inherited_user_message": true}, "lineage"},
+		{"sender", map[string]any{"sender_user_messages": map[string]any{"receiver_turn_id": "turn-1", "receiver_message_id": "message-1", "text": "sender context"}}, "lineage"},
+		{"defaults", map[string]any{"inherited_user_message": false, "sender_user_messages": nil}, ""},
+		{"local retained source", map[string]any{"retained_source": retained}, ""},
+		{"local guardian sources", map[string]any{"guardian_sources": []any{retained}}, ""},
+	} {
+		for _, replacement := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/replacement_%t", tc.name, replacement), func(t *testing.T) {
+				item := map[string]any{"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": "input"}}}
+				data := line(t, 0, "session_meta", meta())
+				if replacement {
+					data += line(t, 1, "compacted", map[string]any{"message": "summary", "window_number": 1, "replacement_history": []any{item}, "replacement_history_metadata": []any{tc.metadata}})
+				} else {
+					raw, err := json.Marshal(map[string]any{"timestamp": "2025-04-01T00:30:00Z", "ordinal": 1, "type": "response_item", "payload": item, "metadata": tc.metadata})
+					if err != nil {
+						t.Fatal(err)
+					}
+					data += string(raw) + "\n"
+				}
+				_, err := inspect(t, data)
+				if tc.code == "" {
+					if err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					assertRejection(t, err, tc.code)
+				}
+			})
+		}
+	}
+}
+
 func TestTurnLifecycle(t *testing.T) {
 	event := func(kind, id string) map[string]any {
 		out := map[string]any{"type": kind, "turn_id": id}
@@ -492,7 +531,10 @@ func TestTurnLifecycle(t *testing.T) {
 		{"missing abort reason", []map[string]any{event("task_started", "turn-1"), {"type": "turn_aborted", "turn_id": "turn-1"}}, "turn_lifecycle"},
 		{"invalid abort reason", []map[string]any{event("task_started", "turn-1"), {"type": "turn_aborted", "turn_id": "turn-1", "reason": "unknown"}}, "turn_lifecycle"},
 		{"numeric abort reason", []map[string]any{event("task_started", "turn-1"), {"type": "turn_aborted", "turn_id": "turn-1", "reason": 1}}, "turn_lifecycle"},
-		{"unmatched completion", []map[string]any{event("task_started", "turn-1"), event("task_complete", "turn-2")}, "in_flight_turn"},
+		{"unmatched completion", []map[string]any{event("task_started", "turn-1"), event("task_complete", "turn-2")}, "turn_lifecycle"},
+		{"orphan completion", []map[string]any{event("task_complete", "turn-1")}, "turn_lifecycle"},
+		{"duplicate completion", []map[string]any{event("task_started", "turn-1"), event("task_complete", "turn-1"), event("task_complete", "turn-1")}, "turn_lifecycle"},
+		{"orphan alias completion", []map[string]any{event("turn_complete", "turn-1")}, "turn_lifecycle"},
 		{"unmatched abort", []map[string]any{event("task_started", "turn-1"), event("turn_aborted", "turn-2")}, "in_flight_turn"},
 		{"unidentified abort", []map[string]any{event("task_started", "turn-1"), {"type": "turn_aborted", "reason": "interrupted"}}, "in_flight_turn"},
 		{"multiple outstanding turns", []map[string]any{event("task_started", "turn-1"), event("task_started", "turn-2"), event("task_complete", "turn-2")}, "in_flight_turn"},

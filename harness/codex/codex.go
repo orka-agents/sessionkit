@@ -247,6 +247,9 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 			}
 			rootsChanged = true
 		case "response_item":
+			if err := responseMetadata(record["metadata"], relative, ordinal, tracker); err != nil {
+				return fail(err)
+			}
 			if err := responseItem(payload, pending, relative, ordinal, tracker); err != nil {
 				return fail(err)
 			}
@@ -287,6 +290,9 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 					}
 					if _, ok := entry.(map[string]any); !ok {
 						return fail(reject(relative, "compacted", "replacement history metadata entries must be objects", ordinal))
+					}
+					if err := responseMetadata(entry, relative, ordinal, tracker); err != nil {
+						return fail(err)
 					}
 				}
 			}
@@ -347,6 +353,9 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 					}
 					turns[turnID] = ordinal
 				} else {
+					if _, exists := turns[turnID]; !exists {
+						return fail(reject(relative, "turn_lifecycle", "turn completion has no matching start", ordinal))
+					}
 					delete(turns, turnID)
 				}
 			case "turn_aborted":
@@ -442,6 +451,26 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 	inspection.SourceDigest = hex.EncodeToString(digest.Sum(nil))
 	inspection.SourceSizeBytes = counted.size
 	return inspection, nil
+}
+
+func responseMetadata(value any, component string, ordinal uint64, tracker *budget.Tracker) error {
+	if err := tracker.Check(); err != nil {
+		return err
+	}
+	if value == nil {
+		return nil
+	}
+	metadata, ok := value.(map[string]any)
+	if !ok {
+		return reject(component, "response_item", "response metadata must be an object", ordinal)
+	}
+	if inherited := metadata["inherited_user_message"]; inherited != nil && inherited != false {
+		return reject(component, "lineage", "inherited response context is not supported", ordinal)
+	}
+	if metadata["sender_user_messages"] != nil {
+		return reject(component, "lineage", "sender response context is not supported", ordinal)
+	}
+	return nil
 }
 
 func responseItem(payload map[string]any, pending map[string]toolCall, component string, ordinal uint64, tracker *budget.Tracker) error {

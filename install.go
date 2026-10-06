@@ -195,6 +195,12 @@ func install(ctx context.Context, p Plan, hook installHook) (Receipt, error) {
 			return unknown(writeErr)
 		}
 		receipt.Phase = "planned"
+		if hookErr := hit("cleanup_journal"); hookErr != nil {
+			return unknown(hookErr)
+		}
+		if cleanupErr := cleanup.Check(); cleanupErr != nil {
+			return receipt, cleanupErr
+		}
 		_ = root.Remove(state.TempPath)
 		return receipt, err
 	}
