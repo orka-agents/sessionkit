@@ -536,9 +536,9 @@ func TestSupportedToolFields(t *testing.T) {
 		{"numeric output", nil, 1, false},
 		{"malformed output content", nil, []any{map[string]any{"type": "input_text", "text": 1}}, false},
 		{"malformed image", nil, []any{map[string]any{"type": "input_image", "image_url": 1}}, false},
-		{"invalid image detail", nil, []any{map[string]any{"type": "input_image", "file_id": "image", "detail": "invalid"}}, false},
+		{"invalid image detail", nil, []any{map[string]any{"type": "input_image", "image_url": "data:image/png;base64,YQ==", "detail": "invalid"}}, false},
 		{"text output", nil, "done", true},
-		{"structured output", nil, []any{map[string]any{"type": "input_text", "text": "done"}, map[string]any{"type": "input_image", "file_id": "image", "detail": "high"}}, true},
+		{"structured output", nil, []any{map[string]any{"type": "input_text", "text": "done"}, map[string]any{"type": "input_image", "image_url": "data:image/png;base64,YQ==", "detail": "high"}}, true},
 	} {
 		for _, replacement := range []bool{false, true} {
 			t.Run(tc.name+map[bool]string{false: "/rollout", true: "/replacement"}[replacement], func(t *testing.T) {
@@ -563,6 +563,55 @@ func TestSupportedToolFields(t *testing.T) {
 					assertRejection(t, err, "response_item")
 				}
 			})
+		}
+	}
+}
+
+func TestContentReferencesMustBeInline(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content map[string]any
+		valid   bool
+	}{
+		{"provider image", map[string]any{"type": "input_image", "file_id": "file-image"}, false},
+		{"remote image", map[string]any{"type": "input_image", "image_url": "https://example.test/image.png"}, false},
+		{"remote audio", map[string]any{"type": "input_audio", "audio_url": "https://example.test/audio.wav"}, false},
+		{"inline image", map[string]any{"type": "input_image", "image_url": "data:image/png;base64,YQ=="}, true},
+		{"inline audio", map[string]any{"type": "input_audio", "audio_url": "data:audio/wav;base64,YQ=="}, true},
+	} {
+		for _, kind := range []string{"message", "function_call_output", "custom_tool_call_output"} {
+			for _, replacement := range []bool{false, true} {
+				t.Run(tc.name+"/"+kind+map[bool]string{false: "/rollout", true: "/replacement"}[replacement], func(t *testing.T) {
+					item := map[string]any{"type": kind}
+					items := []any{}
+					if kind == "message" {
+						item["role"] = "user"
+						item["content"] = []any{tc.content}
+					} else {
+						call := map[string]any{"type": strings.TrimSuffix(kind, "_output"), "call_id": "call-1", "name": "test", "arguments": "{}", "input": "input"}
+						items = append(items, call)
+						item["call_id"] = "call-1"
+						item["output"] = []any{tc.content}
+					}
+					items = append(items, item)
+					data := line(t, 0, "session_meta", meta())
+					if replacement {
+						data += line(t, 1, "compacted", map[string]any{"message": "summary", "replacement_history": items, "window_number": 1})
+					} else {
+						for index, item := range items {
+							data += line(t, uint64(index+1), "response_item", item)
+						}
+					}
+					_, err := inspect(t, data)
+					if tc.valid {
+						if err != nil {
+							t.Fatal(err)
+						}
+					} else {
+						assertRejection(t, err, "external_reference")
+					}
+				})
+			}
 		}
 	}
 }

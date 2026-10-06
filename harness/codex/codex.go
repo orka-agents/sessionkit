@@ -446,6 +446,34 @@ func responseItem(payload map[string]any, pending map[string]toolCall, component
 	if !ok || kind == "" {
 		return reject(component, "response_item", "response item type must be a nonempty string", ordinal)
 	}
+	var content []any
+	switch kind {
+	case "message":
+		content, _ = payload["content"].([]any)
+	case "function_call_output", "custom_tool_call_output":
+		content, _ = payload["output"].([]any)
+	}
+	for _, value := range content {
+		if err := tracker.Check(); err != nil {
+			return err
+		}
+		item, _ := value.(map[string]any)
+		urlField := ""
+		switch item["type"] {
+		case "input_image":
+			if item["file_id"] != nil {
+				return reject(component, "external_reference", "provider-backed image files are not included in the bundle", ordinal)
+			}
+			urlField = "image_url"
+		case "input_audio":
+			urlField = "audio_url"
+		default:
+			continue
+		}
+		if url, ok := item[urlField].(string); ok && !strings.HasPrefix(url, "data:") {
+			return reject(component, "external_reference", "external media URLs are not included in the bundle", ordinal)
+		}
+	}
 	switch kind {
 	case "agent_message":
 		return reject(component, "subagent", "inter-agent response items are not supported", ordinal)
@@ -510,8 +538,7 @@ func toolOutput(value any, tracker *budget.Tracker) (bool, error) {
 			field = "encrypted_content"
 		case "input_image":
 			_, url := item["image_url"].(string)
-			_, file := item["file_id"].(string)
-			if !url && !file {
+			if !url {
 				return false, nil
 			}
 			if detail := item["detail"]; detail != nil && detail != "auto" && detail != "low" && detail != "high" && detail != "original" {

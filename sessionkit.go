@@ -21,6 +21,7 @@ import (
 	bundleio "github.com/orka-agents/sessionkit/internal/bundle"
 	"github.com/orka-agents/sessionkit/internal/fsx"
 	"github.com/orka-agents/sessionkit/internal/harness"
+	"github.com/orka-agents/sessionkit/internal/journal"
 	"github.com/orka-agents/sessionkit/internal/jsonl"
 )
 
@@ -448,6 +449,15 @@ func PlanInstall(ctx context.Context, bundle Bundle, dst Destination) (Plan, err
 		return empty, reject("harness", "source and destination harnesses differ")
 	}
 	if err = validateDestination(dst); err != nil {
+		return empty, err
+	}
+	journalRoot, err := fsx.OpenRoot(dst.JournalDir)
+	if err != nil {
+		return empty, err
+	}
+	err = journal.CheckOutside(journalRoot, checked.Dir)
+	_ = journalRoot.Close()
+	if err != nil {
 		return empty, err
 	}
 	a, err := adapterFor(dst.Harness)

@@ -45,7 +45,7 @@ func install(ctx context.Context, p Plan, hook installHook) (Receipt, error) {
 	}
 	ctx, cancel := operationContext(ctx, b)
 	defer cancel()
-	j, err := journal.Open(ctx, p.destination.JournalDir, p.OperationID)
+	j, err := journal.OpenOutside(ctx, p.destination.JournalDir, p.OperationID, p.bundleDir)
 	if err != nil {
 		return unknown(operationError(b, err))
 	}

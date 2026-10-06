@@ -403,6 +403,50 @@ func TestVerifiedRetryDetectsJournalReplacement(t *testing.T) {
 	}
 }
 
+func TestJournalCannotMutateVerifiedBundle(t *testing.T) {
+	for _, inside := range []string{".", "components"} {
+		t.Run(inside, func(t *testing.T) {
+			_, bundle, _, _ := testBundle(t)
+			dst := testDestination(t)
+			dst.JournalDir = filepath.Join(bundle.Dir, inside)
+			_, err := PlanInstall(context.Background(), bundle, dst)
+			var rejected *RejectionError
+			if !errors.As(err, &rejected) {
+				t.Fatalf("planning accepted journal inside bundle: %v", err)
+			}
+			opened, err := journal.OpenOutside(context.Background(), dst.JournalDir, strings.Repeat("a", 32), bundle.Dir)
+			if opened != nil {
+				_ = opened.Close()
+			}
+			if !errors.As(err, &rejected) {
+				t.Fatalf("journal open accepted overlap: %v", err)
+			}
+			if _, err := OpenBundle(context.Background(), bundle.Dir, Budget{}); err != nil {
+				t.Fatalf("overlap rejection mutated the verified bundle: %v", err)
+			}
+		})
+	}
+}
+
+func TestVerifiedRetryWithoutBundleDirectory(t *testing.T) {
+	_, bundle, _, _ := testBundle(t)
+	dst := testDestination(t)
+	plan, err := PlanInstall(context.Background(), bundle, dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = Install(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.RemoveAll(bundle.Dir); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := Install(context.Background(), plan)
+	if err != nil || receipt.Outcome != Installed {
+		t.Fatalf("verified recovery must not require the original bundle directory: %+v %v", receipt, err)
+	}
+}
+
 func TestJournalRejectsDataAfterItsReadLimit(t *testing.T) {
 	dir := tempDir(t)
 	id := strings.Repeat("a", 32)

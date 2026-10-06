@@ -37,6 +37,15 @@ type Journal struct {
 }
 
 func Open(ctx context.Context, dir, id string) (*Journal, error) {
+	return open(ctx, dir, id, "")
+}
+
+// OpenOutside rejects a journal inside the protected bundle before creating its lock.
+func OpenOutside(ctx context.Context, dir, id, bundleDir string) (*Journal, error) {
+	return open(ctx, dir, id, bundleDir)
+}
+
+func open(ctx context.Context, dir, id, bundleDir string) (*Journal, error) {
 	if len(id) != 32 {
 		return nil, fmt.Errorf("invalid operation ID")
 	}
@@ -48,6 +57,12 @@ func Open(ctx context.Context, dir, id string) (*Journal, error) {
 	r, err := fsx.OpenRoot(dir)
 	if err != nil {
 		return nil, err
+	}
+	if bundleDir != "" {
+		if err := CheckOutside(r, bundleDir); err != nil {
+			_ = r.Close()
+			return nil, err
+		}
 	}
 	f, err := r.LockFile(id + ".lock")
 	if err != nil {
@@ -73,6 +88,27 @@ func Open(ctx context.Context, dir, id string) (*Journal, error) {
 		}
 	}
 }
+
+// CheckOutside compares directory ancestry through the retained journal root.
+func CheckOutside(root *fsx.Root, bundleDir string) error {
+	bundle, err := fsx.OpenRoot(bundleDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil // A missing bundle cannot contain this journal during recovery.
+	}
+	if err != nil {
+		return err
+	}
+	defer func() { _ = bundle.Close() }()
+	inside, err := bundle.Contains(root)
+	if err != nil {
+		return err
+	}
+	if inside {
+		return &model.RejectionError{Rejections: []model.Rejection{{Code: "journal_path", Message: "journal directory must be outside the bundle"}}}
+	}
+	return nil
+}
+
 func (j *Journal) Close() error {
 	e := j.lock.Close()
 	other := j.root.Close()
