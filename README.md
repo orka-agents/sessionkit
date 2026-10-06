@@ -184,6 +184,9 @@ and elapsed time. Zero fields choose these defaults; negative limits reject:
 | Temporary bytes written/reserved | 1 GiB |
 | Elapsed time | 5 minutes |
 
+A canceled attempt that has not begun publication may reset its journal using
+an independent one-second cleanup budget with a 16 KiB temporary-write limit.
+
 `Inspect`, `Capture`, and `OpenBundle` accept caller budgets. `PlanInstall`,
 `Install`, and `Verify` use the fixed defaults above. Raising a capture budget
 does not raise installation limits; large bundles captured with custom limits

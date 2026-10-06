@@ -279,6 +279,54 @@ func TestDestinationVersionIsRequired(t *testing.T) {
 	}
 }
 
+func TestCancellationBeforePublicationUsesCleanupBudget(t *testing.T) {
+	_, bundle, rel, raw := testBundle(t)
+	dst := testDestination(t)
+	plan, err := PlanInstall(context.Background(), bundle, dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var held io.Closer
+	receipt, err := install(ctx, plan, func(phase string) error {
+		if phase != "staged" {
+			return nil
+		}
+		var err error
+		held, err = writerlock.Publication(context.Background(), dst.Root, plan.ThreadID)
+		if err != nil {
+			return err
+		}
+		t.Cleanup(func() { _ = held.Close() })
+		timer := time.AfterFunc(30*time.Millisecond, cancel)
+		t.Cleanup(func() { timer.Stop() })
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) || receipt.Outcome != RejectedBeforeMutation || receipt.Phase != "planned" {
+		t.Fatalf("unpublished cancellation must reset: %+v %v", receipt, err)
+	}
+	var state journal.State
+	if err := json.Unmarshal(mustRead(t, filepath.Join(dst.JournalDir, plan.OperationID+".json")), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Phase != "planned" {
+		t.Fatalf("journal did not reset: %+v", state)
+	}
+	for _, name := range []string{rel, state.TempPath} {
+		if _, err := os.Stat(filepath.Join(dst.Root, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("unpublished cancellation left %s: %v", name, err)
+		}
+	}
+	if err := held.Close(); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err = Install(context.Background(), plan)
+	if err != nil || receipt.Outcome != Installed || !bytes.Equal(raw, mustRead(t, filepath.Join(dst.Root, rel))) {
+		t.Fatalf("same-plan retry after cancellation: %+v %v", receipt, err)
+	}
+}
+
 func TestRootReplacementDuringPublicationDoesNotReportInstalled(t *testing.T) {
 	_, bundle, rel, _ := testBundle(t)
 	dst := testDestination(t)

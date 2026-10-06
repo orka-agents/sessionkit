@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"time"
 
 	"github.com/orka-agents/sessionkit/internal/budget"
 	bundleio "github.com/orka-agents/sessionkit/internal/bundle"
@@ -188,7 +189,9 @@ func install(ctx context.Context, p Plan, hook installHook) (Receipt, error) {
 		// This attempt did not publish. Record that it can restage before
 		// removing the witness, including if cleanup is interrupted.
 		state.Phase = "planned"
-		if writeErr := j.Write(state, b); writeErr != nil {
+		// Cancellation must not prevent recording that publication never began.
+		cleanup := budget.New(context.Background(), Budget{Timeout: time.Second, MaxTempBytes: 16 << 10})
+		if writeErr := j.Write(state, cleanup); writeErr != nil {
 			return unknown(writeErr)
 		}
 		receipt.Phase = "planned"

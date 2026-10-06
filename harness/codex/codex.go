@@ -222,7 +222,13 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 		if !ok || kind == "" {
 			return fail(reject(relative, "record_type", "record type must be a nonempty string", ordinal))
 		}
-		payload, _ := record["payload"].(map[string]any)
+		payload, objectPayload := record["payload"].(map[string]any)
+		switch kind {
+		case "session_meta", "response_item", "compacted", "turn_context", "event_msg", "token_usage_record", "world_state":
+			if !objectPayload {
+				return fail(reject(relative, "record_schema", "known record payload must be an object", ordinal))
+			}
+		}
 		if inspection.Records.Total == 0 && kind != "session_meta" {
 			return fail(reject(relative, "session_meta", "first record must be session_meta", ordinal))
 		}
@@ -449,7 +455,13 @@ func responseItem(payload map[string]any, pending map[string]toolCall, component
 	var content []any
 	switch kind {
 	case "message":
-		content, _ = payload["content"].([]any)
+		if _, ok := payload["role"].(string); !ok {
+			return reject(component, "response_item", "message role must be a string", ordinal)
+		}
+		content, ok = payload["content"].([]any)
+		if !ok {
+			return reject(component, "response_item", "message content must be an array", ordinal)
+		}
 	case "function_call_output", "custom_tool_call_output":
 		content, _ = payload["output"].([]any)
 	}
@@ -458,12 +470,33 @@ func responseItem(payload map[string]any, pending map[string]toolCall, component
 			return err
 		}
 		item, _ := value.(map[string]any)
+		if item["type"] == "input_image" && item["file_id"] != nil {
+			return reject(component, "external_reference", "provider-backed image files are not included in the bundle", ordinal)
+		}
+		if kind == "message" {
+			field := ""
+			switch item["type"] {
+			case "input_text", "output_text":
+				field = "text"
+			case "input_image":
+				field = "image_url"
+			case "input_audio":
+				field = "audio_url"
+			default:
+				return reject(component, "response_item", "message content type is not supported", ordinal)
+			}
+			if _, ok := item[field].(string); !ok {
+				return reject(component, "response_item", "message content requires a string payload", ordinal)
+			}
+			if item["type"] == "input_image" {
+				if detail := item["detail"]; detail != nil && detail != "auto" && detail != "low" && detail != "high" && detail != "original" {
+					return reject(component, "response_item", "message image detail is not supported", ordinal)
+				}
+			}
+		}
 		urlField := ""
 		switch item["type"] {
 		case "input_image":
-			if item["file_id"] != nil {
-				return reject(component, "external_reference", "provider-backed image files are not included in the bundle", ordinal)
-			}
 			urlField = "image_url"
 		case "input_audio":
 			urlField = "audio_url"

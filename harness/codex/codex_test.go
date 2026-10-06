@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -405,6 +406,66 @@ func assertRejection(t *testing.T, err error, code string) {
 	var rejected *model.RejectionError
 	if !errors.As(err, &rejected) || len(rejected.Rejections) == 0 || rejected.Rejections[0].Code != code {
 		t.Fatalf("want rejection %s, got %v", code, err)
+	}
+}
+
+func TestKnownRecordPayloadRequiresObject(t *testing.T) {
+	for _, kind := range []string{"session_meta", "response_item", "compacted", "turn_context", "event_msg", "token_usage_record", "world_state"} {
+		for _, payload := range []any{nil, "invalid", 1, []any{}} {
+			t.Run(fmt.Sprintf("%s/%T", kind, payload), func(t *testing.T) {
+				data := line(t, 0, "session_meta", meta())
+				if kind == "session_meta" {
+					data = line(t, 0, kind, payload)
+				} else {
+					data += line(t, 1, kind, payload)
+				}
+				_, err := inspect(t, data)
+				assertRejection(t, err, "record_schema")
+			})
+		}
+	}
+}
+
+func TestMessageRequiresNativeContent(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		role    any
+		content any
+		valid   bool
+	}{
+		{"null role", nil, []any{}, false},
+		{"numeric role", 1, []any{}, false},
+		{"null content", "user", nil, false},
+		{"scalar content", "user", "invalid", false},
+		{"null item", "user", []any{nil}, false},
+		{"missing text", "user", []any{map[string]any{"type": "input_text"}}, false},
+		{"numeric text", "user", []any{map[string]any{"type": "output_text", "text": 1}}, false},
+		{"missing image", "user", []any{map[string]any{"type": "input_image"}}, false},
+		{"invalid image detail", "user", []any{map[string]any{"type": "input_image", "image_url": "data:image/png;base64,YQ==", "detail": "invalid"}}, false},
+		{"missing audio", "user", []any{map[string]any{"type": "input_audio"}}, false},
+		{"unknown content", "user", []any{map[string]any{"type": "future_content"}}, false},
+		{"text", "assistant", []any{map[string]any{"type": "input_text", "text": "input"}, map[string]any{"type": "output_text", "text": "output"}}, true},
+		{"empty", "user", []any{}, true},
+	} {
+		for _, replacement := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/replacement_%t", tc.name, replacement), func(t *testing.T) {
+				item := map[string]any{"type": "message", "role": tc.role, "content": tc.content}
+				data := line(t, 0, "session_meta", meta())
+				if replacement {
+					data += line(t, 1, "compacted", map[string]any{"message": "summary", "window_number": 1, "replacement_history": []any{item}})
+				} else {
+					data += line(t, 1, "response_item", item)
+				}
+				_, err := inspect(t, data)
+				if tc.valid {
+					if err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					assertRejection(t, err, "response_item")
+				}
+			})
+		}
 	}
 }
 
