@@ -66,6 +66,7 @@ type Bundle struct {
 }
 type Destination struct {
 	Harness    Harness `json:"harness"`
+	CLIVersion string  `json:"cliVersion"`
 	Root       string  `json:"root"`
 	WorkingDir string  `json:"workingDir"`
 	JournalDir string  `json:"journalDir"`

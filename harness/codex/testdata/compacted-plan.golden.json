@@ -42,6 +42,7 @@
   "bundleDir": "/sessionkit/bundle",
   "destination": {
     "harness": "codex",
+    "cliVersion": "0.160.0",
     "root": "/sessionkit/destination-home",
     "workingDir": "/sessionkit/destination-workspace",
     "journalDir": "/sessionkit/journal"

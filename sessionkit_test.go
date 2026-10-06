@@ -61,7 +61,7 @@ func testBundle(t *testing.T) (Source, Bundle, string, []byte) {
 }
 func testDestination(t *testing.T) Destination {
 	t.Helper()
-	return Destination{Harness: Codex, Root: tempDir(t), WorkingDir: tempDir(t), JournalDir: tempDir(t)}
+	return Destination{Harness: Codex, CLIVersion: "0.160.0", Root: tempDir(t), WorkingDir: tempDir(t), JournalDir: tempDir(t)}
 }
 func mustRead(t *testing.T, name string) []byte {
 	t.Helper()
@@ -621,7 +621,7 @@ func TestGoldenInspectionAndPlan(t *testing.T) {
 			plan.BundleDigest = "<manifest-sha256>"
 			plan.seal = "<plan-sha256>"
 			plan.bundleDir = "/sessionkit/bundle"
-			plan.destination = Destination{Harness: Codex, Root: "/sessionkit/destination-home", WorkingDir: "/sessionkit/destination-workspace", JournalDir: "/sessionkit/journal"}
+			plan.destination = Destination{Harness: Codex, CLIVersion: "0.160.0", Root: "/sessionkit/destination-home", WorkingDir: "/sessionkit/destination-workspace", JournalDir: "/sessionkit/journal"}
 			plan.ResumeHints.CodexHome = plan.destination.Root
 			plan.ResumeHints.CWDOverride = plan.destination.WorkingDir
 			plan.ResumeHints.RuntimeWorkspaceRoots = []string{plan.destination.WorkingDir}

@@ -181,6 +181,104 @@ func TestStagedVerificationFailurePreservesPublicationKnowledge(t *testing.T) {
 	}
 }
 
+func TestTargetOpenFailureRetainsRetryState(t *testing.T) {
+	for _, retry := range []bool{false, true} {
+		t.Run(fmt.Sprintf("retry_%t", retry), func(t *testing.T) {
+			_, bundle, rel, raw := testBundle(t)
+			dst := testDestination(t)
+			plan, err := PlanInstall(context.Background(), bundle, dst)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if retry {
+				_, err = install(context.Background(), plan, func(phase string) error {
+					if phase == "staged" {
+						return fmt.Errorf("interrupted before publication")
+					}
+					return nil
+				})
+				var unknown *UnknownOutcomeError
+				if !errors.As(err, &unknown) {
+					t.Fatalf("expected staged interruption: %v", err)
+				}
+			}
+			target := filepath.Join(dst.Root, rel)
+			other := filepath.Join(tempDir(t), "other")
+			if err := os.WriteFile(other, []byte("other file"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			injected := false
+			receipt, err := install(context.Background(), plan, func(phase string) error {
+				if phase == "target_open" {
+					injected = true
+					return os.Symlink(other, target)
+				}
+				return nil
+			})
+			if !injected || err == nil {
+				t.Fatalf("expected target-open failure: %+v %v", receipt, err)
+			}
+			expectedPhase := "planned"
+			witness := filepath.Join(filepath.Dir(target), ".sessionkit-"+plan.OperationID+".tmp")
+			if retry {
+				expectedPhase = "staged"
+				var unknown *UnknownOutcomeError
+				if receipt.Outcome != Unknown || !errors.As(err, &unknown) {
+					t.Fatalf("staged retry lost uncertainty: %+v %v", receipt, err)
+				}
+				if _, err := os.Stat(witness); err != nil {
+					t.Fatalf("staged retry lost its witness: %v", err)
+				}
+			} else {
+				if receipt.Outcome != RejectedBeforeMutation {
+					t.Fatalf("unpublished attempt must reject: %+v %v", receipt, err)
+				}
+				if _, err := os.Stat(witness); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("unpublished attempt left its witness: %v", err)
+				}
+			}
+			var state journal.State
+			if err := json.Unmarshal(mustRead(t, filepath.Join(dst.JournalDir, plan.OperationID+".json")), &state); err != nil {
+				t.Fatal(err)
+			}
+			if receipt.Phase != expectedPhase || state.Phase != expectedPhase {
+				t.Fatalf("receipt and journal phase must be %s: %+v %+v", expectedPhase, receipt, state)
+			}
+			if string(mustRead(t, other)) != "other file" {
+				t.Fatal("changed the symlink target")
+			}
+			if err := os.Remove(target); err != nil {
+				t.Fatal(err)
+			}
+			receipt, err = Install(context.Background(), plan)
+			if err != nil || receipt.Outcome != Installed || !bytes.Equal(raw, mustRead(t, target)) {
+				t.Fatalf("same-plan retry failed: %+v %v", receipt, err)
+			}
+		})
+	}
+}
+
+func TestDestinationVersionIsRequired(t *testing.T) {
+	_, bundle, _, _ := testBundle(t)
+	for _, version := range []string{"", "0.159.1", "0.160.1"} {
+		t.Run(version, func(t *testing.T) {
+			dst := testDestination(t)
+			dst.CLIVersion = version
+			_, err := PlanInstall(context.Background(), bundle, dst)
+			var rejected *RejectionError
+			if !errors.As(err, &rejected) || len(rejected.Rejections) != 1 || rejected.Rejections[0].Code != "cli_version" {
+				t.Fatalf("unsupported destination version accepted: %v", err)
+			}
+			for _, dir := range []string{dst.Root, dst.JournalDir} {
+				entries, err := os.ReadDir(dir)
+				if err != nil || len(entries) != 0 {
+					t.Fatalf("planning changed destination: %v %v", entries, err)
+				}
+			}
+		})
+	}
+}
+
 func TestRootReplacementDuringPublicationDoesNotReportInstalled(t *testing.T) {
 	_, bundle, rel, _ := testBundle(t)
 	dst := testDestination(t)

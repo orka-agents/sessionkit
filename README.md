@@ -65,6 +65,7 @@ if err != nil {
 
 dst := sessionkit.Destination{
     Harness: sessionkit.Codex,
+    CLIVersion: "0.160.0", // checked against the caller's destination binary
     Root: destinationHome,
     WorkingDir: destinationWorkspace,
     JournalDir: journalDir, // existing directory outside destinationHome and bundleDir
@@ -90,6 +91,9 @@ passing a caller-selected directory. Use caller-owned private roots; SessionKit
 creates files with mode 0600 and directories with mode 0700, and leaves existing
 directory modes alone. The destination home and bundle must not overlap.
 Inspection changes only lock coordination files, never the rollout.
+The caller supplies the verified destination binary version in `CLIVersion`.
+Planning accepts only the tested `0.160.0` source/destination pair; SessionKit
+does not launch a binary to discover its version.
 Verification also holds Codex's writer coordination and rejects an
 active writer. Planning performs no writes.
 

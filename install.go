@@ -211,6 +211,9 @@ func install(ctx context.Context, p Plan, hook installHook) (Receipt, error) {
 	if err = root.CheckPath(p.destination.Root); err != nil {
 		return rejectUnpublished(err)
 	}
+	if err = hit("target_open"); err != nil {
+		return rejectUnpublished(err)
+	}
 	target, targetErr := root.Open(p.TargetPath)
 	if targetErr == nil {
 		targetInfo, e := target.Stat()
@@ -232,7 +235,7 @@ func install(ctx context.Context, p Plan, hook installHook) (Receipt, error) {
 		}
 	} else {
 		if !errors.Is(targetErr, os.ErrNotExist) {
-			return unknown(targetErr)
+			return rejectUnpublished(targetErr)
 		}
 		staged, _, e := digestFile(root, state.TempPath, b)
 		if e != nil {

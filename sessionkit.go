@@ -396,6 +396,9 @@ func validateDestination(dst Destination) error {
 	if _, err := adapterFor(dst.Harness); err != nil {
 		return err
 	}
+	if dst.CLIVersion != "0.160.0" {
+		return reject("cli_version", "destination CLI version must be the supported 0.160.0")
+	}
 	workspace, err := fsx.OpenRoot(dst.WorkingDir)
 	if err != nil {
 		return err

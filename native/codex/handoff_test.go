@@ -230,7 +230,7 @@ func fixtureHome(t *testing.T, name string, s *stubProvider) (home, cwd, path st
 }
 
 func destination(t *testing.T, home, cwd string) sessionkit.Destination {
-	return sessionkit.Destination{Harness: sessionkit.Codex, Root: home, WorkingDir: cwd, JournalDir: tempDir(t)}
+	return sessionkit.Destination{Harness: sessionkit.Codex, CLIVersion: "0.160.0", Root: home, WorkingDir: cwd, JournalDir: tempDir(t)}
 }
 
 func installBundle(t *testing.T, b sessionkit.Bundle, d sessionkit.Destination) (sessionkit.Plan, string) {
