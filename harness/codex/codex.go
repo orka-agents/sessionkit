@@ -247,7 +247,11 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 			case "function_call", "custom_tool_call":
 				inspection.Records.ToolCalls++
 				if itemKind == "function_call" && payload["name"] == "exec_command" {
-					commands[payload["call_id"].(string)] = ordinal
+					id := payload["call_id"].(string)
+					if _, active := commands[id]; active {
+						return fail(reject(relative, "active_command", "exec command call ID is already active", ordinal))
+					}
+					commands[id] = ordinal
 				}
 			case "function_call_output", "custom_tool_call_output":
 				inspection.Records.ToolOutputs++

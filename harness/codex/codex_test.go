@@ -237,6 +237,10 @@ func TestExecCommandRequiresProcessCompletion(t *testing.T) {
 			})
 		}
 	}
+	// Reusing a still-active command ID must not let one completion hide a process.
+	_, err := inspect(t, prefix+line(t, 5, "response_item", call)+line(t, 6, "response_item", output)+
+		line(t, 7, "event_msg", map[string]any{"type": "item_completed", "thread_id": testThread, "item": map[string]any{"type": "CommandExecution", "id": "command", "status": "completed"}}))
+	assertRejection(t, err, "active_command")
 }
 
 func TestCustomToolsCompactionAndWarnings(t *testing.T) {
