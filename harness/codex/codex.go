@@ -285,7 +285,16 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 			boundary := ordinal
 			inspection.Compaction.NewestCompleteBoundaryOrdinal = &boundary
 		case "event_msg":
+			eventKind, _ := payload["type"].(string)
+			if eventKind == "sub_agent_activity" || strings.HasPrefix(eventKind, "collab_") {
+				return fail(reject(relative, "subagent", "subagent activity is not supported", ordinal))
+			}
 			switch payload["type"] {
+			case "item_started", "item_completed":
+				item, _ := payload["item"].(map[string]any)
+				if item["type"] == "SubAgentActivity" || item["type"] == "CollabAgentToolCall" {
+					return fail(reject(relative, "subagent", "subagent turn items are not supported", ordinal))
+				}
 			case "task_started", "turn_started", "task_complete", "turn_complete":
 				turnID, ok := payload["turn_id"].(string)
 				if !ok || turnID == "" {

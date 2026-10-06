@@ -24,7 +24,7 @@ Changing a version label does not make a legacy file supported.
 | Records | Every record has a string timestamp and an unsigned integer ordinal, in non-decreasing order. Ordinal gaps are reported. |
 | Identity | Keep the source UUID. Refuse any matching filename under destination `sessions/` or `archived_sessions/`. |
 | Context | Preserve all bytes, unknown record types, function/custom tool calls/results, and complete compaction records. Reject incomplete compactions and orphan tool calls or outputs in effective history, including replacement history. Local-shell and tool-search records are rejected until native validation is available. |
-| Lineage | Reject non-null `history_base`, fork/parent/subagent fields, subagent sources, inter-agent communication records, additional metadata records, and `_<rolloutId>` filename suffixes. |
+| Lineage | Reject non-null `history_base`, fork/parent/subagent fields, subagent sources and activity/collaboration items, inter-agent communication records, additional metadata records, and `_<rolloutId>` filename suffixes. |
 | Relocation | No rewrites. The caller overrides cwd, runtime workspace roots, provider, and policy at resume. |
 | Quiescence | Acquire Codex's coordination lock, then try the thread's writer lock. An active writer or unfinished turn is a typed rejection. Hold the thread lock through copying and digest rechecks using the same home descriptor. |
 | Installation | Private staging, file fsync, hard-link publication without replacement, directory fsync, and digest verification. Probe the destination thread's writer lock while holding Codex's coordination lock across publication. |

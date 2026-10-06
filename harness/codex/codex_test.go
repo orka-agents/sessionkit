@@ -162,6 +162,39 @@ func TestRecordTimestamps(t *testing.T) {
 	}
 }
 
+func TestSubagentActivityRejectsAfterParentCompletes(t *testing.T) {
+	events := []map[string]any{{"type": "sub_agent_activity", "kind": "started", "agent_thread_id": otherThread}}
+	for _, kind := range []string{"collab_agent_spawn_begin", "collab_agent_spawn_end", "collab_agent_interaction_begin", "collab_agent_interaction_end", "collab_waiting_begin", "collab_waiting_end", "collab_close_begin", "collab_close_end", "collab_resume_begin", "collab_resume_end"} {
+		events = append(events, map[string]any{"type": kind})
+	}
+	for _, event := range []string{"item_started", "item_completed"} {
+		for _, item := range []string{"SubAgentActivity", "CollabAgentToolCall", "AgentMessage"} {
+			events = append(events, map[string]any{"type": event, "item": map[string]any{"type": item, "kind": "started", "agent_thread_id": otherThread}})
+		}
+	}
+	for _, event := range events {
+		name := event["type"].(string)
+		item, _ := event["item"].(map[string]any)
+		if item != nil {
+			name += "/" + item["type"].(string)
+		}
+		t.Run(name, func(t *testing.T) {
+			data := line(t, 0, "session_meta", meta()) +
+				line(t, 1, "event_msg", map[string]any{"type": "task_started", "turn_id": "parent"}) +
+				line(t, 2, "event_msg", event) +
+				line(t, 3, "event_msg", map[string]any{"type": "task_complete", "turn_id": "parent"})
+			_, err := inspect(t, data)
+			if item["type"] == "AgentMessage" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				assertRejection(t, err, "subagent")
+			}
+		})
+	}
+}
+
 func TestCustomToolsCompactionAndWarnings(t *testing.T) {
 	metadata := meta()
 	metadata["git"] = map[string]any{"repository_url": "https://user:secret@example.test/repo"}
