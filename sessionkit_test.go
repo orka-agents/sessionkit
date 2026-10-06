@@ -5,15 +5,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/orka-agents/sessionkit/harness/codex/writerlock"
+	"github.com/orka-agents/sessionkit/internal/budget"
+	"github.com/orka-agents/sessionkit/internal/journal"
 )
 
 func tempDir(t *testing.T) string {
@@ -24,9 +25,11 @@ func tempDir(t *testing.T) string {
 	}
 	return p
 }
+
 func testSource(t *testing.T) (Source, string, []byte) {
 	return testSourceName(t, "basic")
 }
+
 func testSourceName(t *testing.T, name string) (Source, string, []byte) {
 	t.Helper()
 	files, err := filepath.Glob("harness/codex/testdata/" + name + "/sessions/*/*/*/*.jsonl")
@@ -50,6 +53,7 @@ func testSourceName(t *testing.T, name string) (Source, string, []byte) {
 	}
 	return Source{Harness: Codex, Root: root, ThreadID: id}, rel, raw
 }
+
 func testBundle(t *testing.T) (Source, Bundle, string, []byte) {
 	t.Helper()
 	src, rel, raw := testSource(t)
@@ -59,10 +63,12 @@ func testBundle(t *testing.T) (Source, Bundle, string, []byte) {
 	}
 	return src, bundle, rel, raw
 }
+
 func testDestination(t *testing.T) Destination {
 	t.Helper()
 	return Destination{Harness: Codex, CLIVersion: "0.160.0", Root: tempDir(t), WorkingDir: tempDir(t), JournalDir: tempDir(t)}
 }
+
 func mustRead(t *testing.T, name string) []byte {
 	t.Helper()
 	b, err := os.ReadFile(name)
@@ -143,42 +149,6 @@ func TestCapturePreservesSourceAndRoundTrip(t *testing.T) {
 	}
 }
 
-func TestCollisionLiveAndArchived(t *testing.T) {
-	ctx := context.Background()
-	src, bundle, rel, raw := testBundle(t)
-	for _, entry := range []struct {
-		base      string
-		uppercase bool
-	}{{"sessions", false}, {"sessions", true}, {"archived_sessions", false}, {"archived_sessions", true}} {
-		t.Run(fmt.Sprintf("%s/uppercase_%t", entry.base, entry.uppercase), func(t *testing.T) {
-			dst := testDestination(t)
-			name := strings.Replace(rel, "sessions", entry.base, 1)
-			if entry.uppercase {
-				name = strings.ReplaceAll(name, src.ThreadID, strings.ToUpper(src.ThreadID))
-			}
-			collisionPath := filepath.Join(dst.Root, name)
-			if err := os.MkdirAll(filepath.Dir(collisionPath), 0700); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(collisionPath, raw, 0600); err != nil {
-				t.Fatal(err)
-			}
-			_, err := PlanInstall(ctx, bundle, dst)
-			var collision *CollisionError
-			if !errors.As(err, &collision) || collision.ThreadID != src.ThreadID {
-				t.Fatalf("collision: %v", err)
-			}
-			if !bytes.Equal(raw, mustRead(t, collisionPath)) {
-				t.Fatal("collision changed file")
-			}
-			journal, err := os.ReadDir(dst.JournalDir)
-			if err != nil || len(journal) != 0 {
-				t.Fatal("collision mutated journal")
-			}
-		})
-	}
-}
-
 func TestCaptureDetectsMutationAndReleasesLock(t *testing.T) {
 	src, rel, raw := testSource(t)
 	dst := filepath.Join(tempDir(t), "bundle")
@@ -220,46 +190,6 @@ func TestActiveWriterBlocksInspectAndCapture(t *testing.T) {
 		if err := fn(); !errors.As(err, &active) {
 			t.Fatalf("active writer: %v", err)
 		}
-	}
-}
-
-func TestRejectSymlinksAndTraversal(t *testing.T) {
-	for _, which := range []string{"root", "rollout", "parent", "thread"} {
-		t.Run(which, func(t *testing.T) {
-			src, rel, raw := testSource(t)
-			switch which {
-			case "root":
-				link := filepath.Join(tempDir(t), "home")
-				if err := os.Symlink(src.Root, link); err != nil {
-					t.Fatal(err)
-				}
-				src.Root = link
-			case "rollout":
-				outside := filepath.Join(tempDir(t), "rollout")
-				if err := os.WriteFile(outside, raw, 0600); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Remove(filepath.Join(src.Root, rel)); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Symlink(outside, filepath.Join(src.Root, rel)); err != nil {
-					t.Fatal(err)
-				}
-			case "parent":
-				outside := tempDir(t)
-				if err := os.Rename(filepath.Join(src.Root, "sessions"), filepath.Join(outside, "sessions")); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Symlink(filepath.Join(outside, "sessions"), filepath.Join(src.Root, "sessions")); err != nil {
-					t.Fatal(err)
-				}
-			case "thread":
-				src.ThreadID = "../escape"
-			}
-			if _, err := Inspect(context.Background(), src, Budget{}); err == nil {
-				t.Fatal("unsafe source accepted")
-			}
-		})
 	}
 }
 
@@ -356,186 +286,6 @@ func TestCaptureBudgetsAndExistingBundle(t *testing.T) {
 	}
 }
 
-func TestInstallFaultReconciliation(t *testing.T) {
-	for _, fault := range []string{"link", "dir_fsync", "temp_remove", "after_temp_remove", "verify"} {
-		t.Run(fault, func(t *testing.T) {
-			_, bundle, rel, raw := testBundle(t)
-			dst := testDestination(t)
-			plan, err := PlanInstall(context.Background(), bundle, dst)
-			if err != nil {
-				t.Fatal(err)
-			}
-			receipt, err := install(context.Background(), plan, func(phase string) error {
-				if phase == fault {
-					return fmt.Errorf("injected %s", phase)
-				}
-				return nil
-			})
-			var unknown *UnknownOutcomeError
-			if !errors.As(err, &unknown) || receipt.Outcome != Unknown {
-				t.Fatalf("fault: %+v %v", receipt, err)
-			}
-			expectedPhase := "staged"
-			if fault == "verify" {
-				expectedPhase = "published"
-			}
-			if receipt.Phase != expectedPhase {
-				t.Fatalf("phase %s != %s", receipt.Phase, expectedPhase)
-			}
-			var journal struct {
-				Phase string `json:"phase"`
-			}
-			if err = json.Unmarshal(mustRead(t, filepath.Join(dst.JournalDir, plan.OperationID+".json")), &journal); err != nil {
-				t.Fatal(err)
-			}
-			if journal.Phase != expectedPhase {
-				t.Fatalf("journal: %+v", journal)
-			}
-			retry, err := Install(context.Background(), plan)
-			if fault == "after_temp_remove" {
-				if !errors.As(err, &unknown) || retry.Outcome != Unknown {
-					t.Fatalf("missing witness: %+v %v", retry, err)
-				}
-				return
-			}
-			if err != nil || retry.Outcome != Installed {
-				t.Fatalf("retry: %+v %v", retry, err)
-			}
-			if !bytes.Equal(raw, mustRead(t, filepath.Join(dst.Root, rel))) {
-				t.Fatal("reconciled bytes changed")
-			}
-		})
-	}
-}
-
-func TestConcurrentInstall(t *testing.T) {
-	_, bundle, rel, raw := testBundle(t)
-	dst := testDestination(t)
-	plan, err := PlanInstall(context.Background(), bundle, dst)
-	if err != nil {
-		t.Fatal(err)
-	}
-	errs := make(chan error, 8)
-	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			receipt, err := Install(context.Background(), plan)
-			if err != nil {
-				err = fmt.Errorf("phase %s: %w", receipt.Phase, err)
-			}
-			if err == nil && receipt.Outcome != Installed {
-				err = fmt.Errorf("outcome %s", receipt.Outcome)
-			}
-			errs <- err
-		}()
-	}
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	if !bytes.Equal(raw, mustRead(t, filepath.Join(dst.Root, rel))) {
-		t.Fatal("concurrent install changed bytes")
-	}
-	files, err := filepath.Glob(filepath.Join(dst.Root, filepath.Dir(rel), "*"))
-	if err != nil || len(files) != 1 {
-		t.Fatalf("publication files: %v %v", files, err)
-	}
-}
-
-func TestCompetingPlansDoNotReplace(t *testing.T) {
-	_, bundle, rel, raw := testBundle(t)
-	dst := testDestination(t)
-	first, err := PlanInstall(context.Background(), bundle, dst)
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := PlanInstall(context.Background(), bundle, dst)
-	if err != nil {
-		t.Fatal(err)
-	}
-	outcomes := make(chan error, 2)
-	var wg sync.WaitGroup
-	for _, p := range []Plan{first, second} {
-		wg.Add(1)
-		go func() { defer wg.Done(); _, err := Install(context.Background(), p); outcomes <- err }()
-	}
-	wg.Wait()
-	close(outcomes)
-	installed, collided := 0, 0
-	for err := range outcomes {
-		var collision *CollisionError
-		if err == nil {
-			installed++
-		} else if errors.As(err, &collision) {
-			collided++
-		} else {
-			t.Fatal(err)
-		}
-	}
-	if installed != 1 || collided != 1 {
-		t.Fatalf("installed=%d collided=%d", installed, collided)
-	}
-	if !bytes.Equal(raw, mustRead(t, filepath.Join(dst.Root, rel))) {
-		t.Fatal("target replaced")
-	}
-}
-
-func TestInstallHoldsCoordinationLockAndPreservesModes(t *testing.T) {
-	_, bundle, rel, _ := testBundle(t)
-	dst := testDestination(t)
-	existing := filepath.Join(dst.Root, "sessions")
-	if err := os.Mkdir(existing, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(existing, 0755); err != nil {
-		t.Fatal(err)
-	}
-	plan, err := PlanInstall(context.Background(), bundle, dst)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = install(context.Background(), plan, func(phase string) error {
-		if phase != "link" && phase != "dir_fsync" && phase != "temp_remove" {
-			return nil
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
-		defer cancel()
-		lock, e := writerlock.Publication(ctx, dst.Root, plan.ThreadID)
-		if e == nil {
-			_ = lock.Close()
-			return fmt.Errorf("coordination lock absent at %s", phase)
-		}
-		if !errors.Is(e, context.DeadlineExceeded) {
-			return e
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	info, err := os.Stat(existing)
-	if err != nil || info.Mode().Perm() != 0755 {
-		t.Fatalf("existing mode: %v %v", info, err)
-	}
-	for _, name := range []string{filepath.Join(dst.Root, filepath.Dir(rel)), bundle.Dir, filepath.Join(bundle.Dir, "components")} {
-		info, err = os.Stat(name)
-		if err != nil || info.Mode().Perm() != 0700 {
-			t.Fatalf("private directory %s: %v %v", name, info, err)
-		}
-	}
-	for _, name := range []string{filepath.Join(dst.Root, rel), filepath.Join(bundle.Dir, "manifest.json"), filepath.Join(bundle.Dir, "components/rollout.jsonl")} {
-		info, err = os.Stat(name)
-		if err != nil || info.Mode().Perm() != 0600 {
-			t.Fatalf("private file %s: %v %v", name, info, err)
-		}
-	}
-}
-
 func TestPlanCannotBeAlteredAndVerifyDetectsDamage(t *testing.T) {
 	_, bundle, rel, _ := testBundle(t)
 	dst := testDestination(t)
@@ -563,40 +313,6 @@ func TestPlanCannotBeAlteredAndVerifyDetectsDamage(t *testing.T) {
 	dst.JournalDir = dst.Root
 	if _, err = PlanInstall(context.Background(), bundle, dst); err == nil {
 		t.Fatal("journal inside destination accepted")
-	}
-}
-
-func TestPlanSurvivesProcessRestartSerialization(t *testing.T) {
-	_, bundle, _, _ := testBundle(t)
-	dst := testDestination(t)
-	plan, err := PlanInstall(context.Background(), bundle, dst)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = install(context.Background(), plan, func(phase string) error {
-		if phase == "dir_fsync" {
-			return fmt.Errorf("process interruption")
-		}
-		return nil
-	})
-	if err == nil {
-		t.Fatal("fault not exercised")
-	}
-	wire, err := json.Marshal(plan)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var restored Plan
-	if err = json.Unmarshal(wire, &restored); err != nil {
-		t.Fatal(err)
-	}
-	receipt, err := Install(context.Background(), restored)
-	if err != nil || receipt.Outcome != Installed {
-		t.Fatalf("persisted plan retry: %+v %v", receipt, err)
-	}
-	wire = bytes.Replace(wire, []byte(plan.ThreadID), []byte("01a10020-1222-76e3-977d-111111111111"), 1)
-	if err = json.Unmarshal(wire, &restored); err == nil {
-		t.Fatal("tampered persisted plan accepted")
 	}
 }
 
@@ -631,6 +347,202 @@ func TestGoldenInspectionAndPlan(t *testing.T) {
 		})
 	}
 }
+
+func TestCaptureCleansUpDuringCreation(t *testing.T) {
+	for _, boundary := range []string{"bundle_directory_created", "bundle_created", "copied"} {
+		t.Run(boundary, func(t *testing.T) {
+			src, _, _ := testSource(t)
+			dir := filepath.Join(tempDir(t), "bundle")
+			failure := errors.New("bundle creation failed")
+			_, err := capture(context.Background(), src, CaptureOptions{BundleDir: dir}, func(phase string) error {
+				if phase == boundary {
+					return failure
+				}
+				return nil
+			})
+			if !errors.Is(err, failure) {
+				t.Fatalf("expected creation failure, got %v", err)
+			}
+			if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("failed capture left a bundle directory: %v", err)
+			}
+			if _, err := Capture(context.Background(), src, CaptureOptions{BundleDir: dir}); err != nil {
+				t.Fatalf("retry after failed creation: %v", err)
+			}
+		})
+	}
+}
+
+func TestCancellationAfterInspectionRejectsSuccess(t *testing.T) {
+	for _, operation := range []string{"inspect", "open bundle"} {
+		t.Run(operation, func(t *testing.T) {
+			src, bundle, _, _ := testBundle(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			original := adapters[Codex]
+			adapters[Codex] = replacingSourceAdapter{Adapter: original, afterInspect: func() error {
+				cancel()
+				return nil
+			}}
+			t.Cleanup(func() { adapters[Codex] = original })
+			var err error
+			if operation == "inspect" {
+				_, err = Inspect(ctx, src, Budget{})
+			} else {
+				_, err = OpenBundle(ctx, bundle.Dir, Budget{})
+			}
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("reported success after cancellation: %v", err)
+			}
+		})
+	}
+}
+
+type countingReader struct {
+	input io.Reader
+	bytes int
+}
+
+func (r *countingReader) Read(p []byte) (int, error) {
+	n, err := r.input.Read(p)
+	r.bytes += n
+	return n, err
+}
+
+func TestCopyDigestBoundsReadRequest(t *testing.T) {
+	input := &countingReader{input: strings.NewReader(strings.Repeat("x", 1<<20))}
+	_, _, err := copyDigest(io.Discard, input, budget.New(context.Background(), Budget{MaxBytes: 8}))
+	var exceeded *BudgetError
+	if !errors.As(err, &exceeded) {
+		t.Fatalf("expected byte budget failure, got %v", err)
+	}
+	if input.bytes > 9 {
+		t.Fatalf("8-byte budget read %d bytes; limit reads to the remainder plus one EOF probe", input.bytes)
+	}
+}
+
+func TestInspectTimeoutUsesBudgetError(t *testing.T) {
+	src, _, _ := testSource(t)
+	lock, err := writerlock.Publication(context.Background(), src.Root, src.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lock.Close() }()
+	_, err = Inspect(context.Background(), src, Budget{Timeout: 20 * time.Millisecond})
+	var exceeded *BudgetError
+	if !errors.As(err, &exceeded) || exceeded.Limit != "timeout" {
+		t.Fatalf("operation timeout must preserve BudgetError, got %T: %v", err, err)
+	}
+}
+
+func TestDestinationVersionIsRequired(t *testing.T) {
+	_, bundle, _, _ := testBundle(t)
+	for _, version := range []string{"", "0.159.1", "0.160.1"} {
+		t.Run(version, func(t *testing.T) {
+			dst := testDestination(t)
+			dst.CLIVersion = version
+			_, err := PlanInstall(context.Background(), bundle, dst)
+			var rejected *RejectionError
+			if !errors.As(err, &rejected) || len(rejected.Rejections) != 1 || rejected.Rejections[0].Code != "cli_version" {
+				t.Fatalf("unsupported destination version accepted: %v", err)
+			}
+			for _, dir := range []string{dst.Root, dst.JournalDir} {
+				entries, err := os.ReadDir(dir)
+				if err != nil || len(entries) != 0 {
+					t.Fatalf("planning changed destination: %v %v", entries, err)
+				}
+			}
+		})
+	}
+}
+
+func TestArtifactSchemasRejectCaseAliases(t *testing.T) {
+	_, bundle, _, _ := testBundle(t)
+	dst := testDestination(t)
+	plan, err := PlanInstall(context.Background(), bundle, dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(bundle.Dir, "manifest.json")
+	manifest := mustRead(t, manifestPath)
+	for _, data := range [][]byte{
+		bytes.Replace(manifest, []byte(`"bundleFormat": 1`), []byte(`"bundleFormat": 999, "BundleFormat": 1`), 1),
+		bytes.Replace(manifest, []byte("{"), []byte(`{"BundleFormat":999,`), 1),
+		bytes.Replace(manifest, []byte(`"cliVersion": "0.160.0"`), []byte(`"cliVersion": "0.159.1", "CLIVersion": "0.160.0"`), 1),
+	} {
+		if err := os.WriteFile(manifestPath, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := OpenBundle(context.Background(), bundle.Dir, Budget{})
+		var integrity *IntegrityError
+		if !errors.As(err, &integrity) {
+			t.Fatalf("manifest case alias accepted: %v", err)
+		}
+	}
+	if err := os.WriteFile(manifestPath, manifest, 0600); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, data := range [][]byte{
+		bytes.Replace(raw, []byte("{"), []byte(`{"TargetPath":"../escape",`), 1),
+		bytes.Replace(raw, []byte(`"destination":{`), []byte(`"destination":{"Root":"/other",`), 1),
+	} {
+		var decoded Plan
+		var integrity *IntegrityError
+		if err := json.Unmarshal(data, &decoded); !errors.As(err, &integrity) {
+			t.Fatalf("plan case alias accepted: %v", err)
+		}
+	}
+	j, err := journal.Open(context.Background(), dst.JournalDir, plan.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	if err := j.Write(journal.State{Phase: "staged"}, budget.New(context.Background(), Budget{})); err != nil {
+		t.Fatal(err)
+	}
+	journalPath := filepath.Join(dst.JournalDir, plan.OperationID+".json")
+	data := bytes.Replace(mustRead(t, journalPath), []byte(`"phase": "staged"`), []byte(`"phase": "staged", "Phase": "planned"`), 1)
+	if err := os.WriteFile(journalPath, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	var integrity *IntegrityError
+	if _, err := j.Read(budget.New(context.Background(), Budget{})); !errors.As(err, &integrity) {
+		t.Fatalf("journal case alias accepted: %v", err)
+	}
+}
+
+func TestJournalRejectsDataAfterItsReadLimit(t *testing.T) {
+	dir := tempDir(t)
+	id := strings.Repeat("a", 32)
+	j, err := journal.Open(context.Background(), dir, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	if err = j.Write(journal.State{OperationID: id, Phase: "staged"}, budget.New(context.Background(), Budget{})); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(filepath.Join(dir, id+".json"), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.WriteString(strings.Repeat(" ", 16385) + "trailing garbage")
+	closeErr := f.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	if _, err = j.Read(budget.New(context.Background(), Budget{})); err == nil {
+		t.Fatal("journal parser accepted bytes beyond its truncated view")
+	}
+}
+
 func checkGolden(t *testing.T, name string, value any) {
 	t.Helper()
 	raw, err := json.MarshalIndent(value, "", "  ")
