@@ -334,6 +334,11 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 					delete(turns, turnID)
 				}
 			case "turn_aborted":
+				switch payload["reason"] {
+				case "interrupted", "replaced", "review_ended", "budget_limited":
+				default:
+					return fail(reject(relative, "turn_lifecycle", "turn abort reason is not supported by the native schema", ordinal))
+				}
 				if turnID, ok := payload["turn_id"].(string); ok && turnID != "" {
 					delete(turns, turnID)
 				}

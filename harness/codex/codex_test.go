@@ -355,7 +355,11 @@ func assertRejection(t *testing.T, err error, code string) {
 
 func TestTurnLifecycle(t *testing.T) {
 	event := func(kind, id string) map[string]any {
-		return map[string]any{"type": kind, "turn_id": id}
+		out := map[string]any{"type": kind, "turn_id": id}
+		if kind == "turn_aborted" {
+			out["reason"] = "interrupted"
+		}
+		return out
 	}
 	for _, tc := range []struct {
 		name   string
@@ -366,9 +370,15 @@ func TestTurnLifecycle(t *testing.T) {
 		{"completed", []map[string]any{event("task_started", "turn-1"), event("task_complete", "turn-1")}, ""},
 		{"aliases", []map[string]any{event("turn_started", "turn-1"), event("turn_complete", "turn-1")}, ""},
 		{"aborted", []map[string]any{event("task_started", "turn-1"), event("turn_aborted", "turn-1")}, ""},
+		{"replaced", []map[string]any{event("task_started", "turn-1"), {"type": "turn_aborted", "turn_id": "turn-1", "reason": "replaced"}}, ""},
+		{"review ended", []map[string]any{event("task_started", "turn-1"), {"type": "turn_aborted", "turn_id": "turn-1", "reason": "review_ended"}}, ""},
+		{"budget limited", []map[string]any{event("task_started", "turn-1"), {"type": "turn_aborted", "turn_id": "turn-1", "reason": "budget_limited"}}, ""},
+		{"missing abort reason", []map[string]any{event("task_started", "turn-1"), {"type": "turn_aborted", "turn_id": "turn-1"}}, "turn_lifecycle"},
+		{"invalid abort reason", []map[string]any{event("task_started", "turn-1"), {"type": "turn_aborted", "turn_id": "turn-1", "reason": "unknown"}}, "turn_lifecycle"},
+		{"numeric abort reason", []map[string]any{event("task_started", "turn-1"), {"type": "turn_aborted", "turn_id": "turn-1", "reason": 1}}, "turn_lifecycle"},
 		{"unmatched completion", []map[string]any{event("task_started", "turn-1"), event("task_complete", "turn-2")}, "in_flight_turn"},
 		{"unmatched abort", []map[string]any{event("task_started", "turn-1"), event("turn_aborted", "turn-2")}, "in_flight_turn"},
-		{"unidentified abort", []map[string]any{event("task_started", "turn-1"), {"type": "turn_aborted"}}, "in_flight_turn"},
+		{"unidentified abort", []map[string]any{event("task_started", "turn-1"), {"type": "turn_aborted", "reason": "interrupted"}}, "in_flight_turn"},
 		{"multiple outstanding turns", []map[string]any{event("task_started", "turn-1"), event("task_started", "turn-2"), event("task_complete", "turn-2")}, "in_flight_turn"},
 		{"missing ID", []map[string]any{{"type": "task_started"}}, "turn_lifecycle"},
 		{"duplicate start", []map[string]any{event("task_started", "turn-1"), event("task_started", "turn-1")}, "turn_lifecycle"},
