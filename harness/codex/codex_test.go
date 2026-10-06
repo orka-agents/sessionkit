@@ -411,7 +411,7 @@ func assertRejection(t *testing.T, err error, code string) {
 }
 
 func TestKnownRecordPayloadRequiresObject(t *testing.T) {
-	for _, kind := range []string{"session_meta", "response_item", "compacted", "turn_context", "event_msg", "token_usage_record", "world_state"} {
+	for _, kind := range []string{"session_meta", "response_item", "compacted", "turn_context", "event_msg", "token_usage_record", "world_state", "retained_context", "security_risk_score", "realtime_item"} {
 		for _, payload := range []any{nil, "invalid", 1, []any{}} {
 			t.Run(fmt.Sprintf("%s/%T", kind, payload), func(t *testing.T) {
 				data := line(t, 0, "session_meta", meta())

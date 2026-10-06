@@ -229,7 +229,7 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 		}
 		payload, objectPayload := record["payload"].(map[string]any)
 		switch kind {
-		case "session_meta", "response_item", "compacted", "turn_context", "event_msg", "token_usage_record", "world_state":
+		case "session_meta", "response_item", "compacted", "turn_context", "event_msg", "token_usage_record", "world_state", "retained_context", "security_risk_score", "realtime_item":
 			if !objectPayload {
 				return fail(reject(relative, "record_schema", "known record payload must be an object", ordinal))
 			}
