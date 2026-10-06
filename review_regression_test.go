@@ -120,6 +120,66 @@ func TestRetryCollisionPreservesPublicationWitness(t *testing.T) {
 	}
 }
 
+func TestStagedVerificationFailurePreservesPublicationKnowledge(t *testing.T) {
+	for _, failure := range []string{"missing", "digest"} {
+		for _, retry := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/retry_%t", failure, retry), func(t *testing.T) {
+				_, bundle, _, _ := testBundle(t)
+				dst := testDestination(t)
+				plan, err := PlanInstall(context.Background(), bundle, dst)
+				if err != nil {
+					t.Fatal(err)
+				}
+				witness := filepath.Join(dst.Root, filepath.Dir(plan.TargetPath), ".sessionkit-"+plan.OperationID+".tmp")
+				damage := func() error {
+					if failure == "missing" {
+						return os.Remove(witness)
+					}
+					return os.WriteFile(witness, []byte("changed"), 0600)
+				}
+				receipt, err := install(context.Background(), plan, func(phase string) error {
+					if phase != "staged" {
+						return nil
+					}
+					if retry {
+						return fmt.Errorf("interrupted staged attempt")
+					}
+					return damage()
+				})
+				if retry {
+					var unknown *UnknownOutcomeError
+					if !errors.As(err, &unknown) {
+						t.Fatalf("expected interrupted attempt: %v", err)
+					}
+					if err := damage(); err != nil {
+						t.Fatal(err)
+					}
+					receipt, err = Install(context.Background(), plan)
+					if receipt.Outcome != Unknown || !errors.As(err, &unknown) {
+						t.Fatalf("staged retry must preserve uncertainty: %+v %v", receipt, err)
+					}
+					if failure == "digest" {
+						if _, err := os.Stat(witness); err != nil {
+							t.Fatalf("staged retry removed its witness: %v", err)
+						}
+					}
+					return
+				}
+				if receipt.Outcome != RejectedBeforeMutation || receipt.Phase != "planned" || err == nil {
+					t.Fatalf("unpublished attempt must reject and reset: %+v %v", receipt, err)
+				}
+				if _, err := os.Stat(witness); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("unpublished attempt left its witness: %v", err)
+				}
+				receipt, err = Install(context.Background(), plan)
+				if err != nil || receipt.Outcome != Installed {
+					t.Fatalf("same-plan retry after rejection: %+v %v", receipt, err)
+				}
+			})
+		}
+	}
+}
+
 func TestRootReplacementDuringPublicationDoesNotReportInstalled(t *testing.T) {
 	_, bundle, rel, _ := testBundle(t)
 	dst := testDestination(t)
@@ -146,54 +206,66 @@ func TestRootReplacementDuringPublicationDoesNotReportInstalled(t *testing.T) {
 	}
 }
 
-func TestRootReplacementAfterJournalVerificationDoesNotReportInstalled(t *testing.T) {
-	_, bundle, rel, raw := testBundle(t)
-	dst := testDestination(t)
-	plan, err := PlanInstall(context.Background(), bundle, dst)
-	if err != nil {
-		t.Fatal(err)
-	}
-	moved := dst.Root + "-moved"
-	t.Cleanup(func() { _ = os.RemoveAll(moved) })
-	receipt, err := install(context.Background(), plan, func(phase string) error {
-		if phase != "journal_verified" {
-			return nil
-		}
-		data, err := os.ReadFile(filepath.Join(dst.JournalDir, plan.OperationID+".json"))
-		if err != nil {
-			return err
-		}
-		var state journal.State
-		if err := json.Unmarshal(data, &state); err != nil {
-			return err
-		}
-		if state.Phase != "verified" {
-			return fmt.Errorf("journal phase is %q, want verified", state.Phase)
-		}
-		if err := os.Rename(dst.Root, moved); err != nil {
-			return err
-		}
-		return os.Mkdir(dst.Root, 0700)
-	})
-	var unknown *UnknownOutcomeError
-	if receipt.Outcome != Unknown || !errors.As(err, &unknown) {
-		t.Fatalf("destination changed after journal write but install claimed success: %+v %v", receipt, err)
-	}
-	if _, err := os.Stat(filepath.Join(dst.Root, rel)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("replacement destination contains target: %v", err)
-	}
-	if got, err := os.ReadFile(filepath.Join(moved, rel)); err != nil || string(got) != string(raw) {
-		t.Fatalf("published target changed in retained root: %v", err)
-	}
-	if err := os.Remove(dst.Root); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(moved, dst.Root); err != nil {
-		t.Fatal(err)
-	}
-	receipt, err = Install(context.Background(), plan)
-	if err != nil || receipt.Outcome != Installed {
-		t.Fatalf("same-plan retry after restoring destination: %+v %v", receipt, err)
+func TestDestinationReplacementAfterJournalVerificationDoesNotReportInstalled(t *testing.T) {
+	for _, scope := range []string{"root", "target_parent"} {
+		t.Run(scope, func(t *testing.T) {
+			_, bundle, rel, raw := testBundle(t)
+			dst := testDestination(t)
+			plan, err := PlanInstall(context.Background(), bundle, dst)
+			if err != nil {
+				t.Fatal(err)
+			}
+			toMove := dst.Root
+			if scope == "target_parent" {
+				toMove = filepath.Join(dst.Root, filepath.Dir(rel))
+			}
+			moved := toMove + "-moved"
+			t.Cleanup(func() { _ = os.RemoveAll(moved) })
+			receipt, err := install(context.Background(), plan, func(phase string) error {
+				if phase != "journal_verified" {
+					return nil
+				}
+				data, err := os.ReadFile(filepath.Join(dst.JournalDir, plan.OperationID+".json"))
+				if err != nil {
+					return err
+				}
+				var state journal.State
+				if err := json.Unmarshal(data, &state); err != nil {
+					return err
+				}
+				if state.Phase != "verified" {
+					return fmt.Errorf("journal phase is %q, want verified", state.Phase)
+				}
+				if err := os.Rename(toMove, moved); err != nil {
+					return err
+				}
+				return os.Mkdir(toMove, 0700)
+			})
+			var unknown *UnknownOutcomeError
+			if receipt.Outcome != Unknown || !errors.As(err, &unknown) {
+				t.Fatalf("destination changed after journal write but install claimed success: %+v %v", receipt, err)
+			}
+			if _, err := os.Stat(filepath.Join(dst.Root, rel)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("replacement destination contains target: %v", err)
+			}
+			retainedTarget := filepath.Join(moved, rel)
+			if scope == "target_parent" {
+				retainedTarget = filepath.Join(moved, filepath.Base(rel))
+			}
+			if got, err := os.ReadFile(retainedTarget); err != nil || string(got) != string(raw) {
+				t.Fatalf("published target changed in retained root: %v", err)
+			}
+			if err := os.Remove(toMove); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(moved, toMove); err != nil {
+				t.Fatal(err)
+			}
+			receipt, err = Install(context.Background(), plan)
+			if err != nil || receipt.Outcome != Installed {
+				t.Fatalf("same-plan retry after restoring destination: %+v %v", receipt, err)
+			}
+		})
 	}
 }
 

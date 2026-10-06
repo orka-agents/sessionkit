@@ -91,8 +91,9 @@ creates files with mode 0600 and directories with mode 0700, and leaves existing
 directory modes alone. Inspection changes only lock coordination files, never
 the rollout. Planning performs no writes.
 
-`OpenBundle` checks the manifest schema, re-inspects the rollout, and verifies
-that every summary and component digest matches. A bundle contains:
+`OpenBundle` checks the manifest schema, rejects undeclared entries, re-inspects
+the rollout, and verifies that every summary and component digest matches.
+A bundle contains:
 
 ```text
 manifest.json

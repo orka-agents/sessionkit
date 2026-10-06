@@ -293,6 +293,17 @@ func openBundle(ctx context.Context, dir string, b *budget.Tracker) (Bundle, str
 	if m.BundleFormat != 1 || m.AdapterVersion != "1" || len(m.Components) != 1 || m.Components[0].LogicalPath != bundleio.RolloutPath || m.Components[0].Role != "rollout" {
 		return empty, "", &IntegrityError{Component: "manifest", Reason: "unsupported bundle schema"}
 	}
+	if err = root.WalkFiles(".", func(name string, isDir bool) error {
+		if err := b.Node(); err != nil {
+			return err
+		}
+		if isDir && name == "components" || !isDir && (name == "manifest.json" || name == bundleio.RolloutPath) {
+			return nil
+		}
+		return &IntegrityError{Component: "bundle", Reason: "undeclared entry"}
+	}); err != nil {
+		return empty, "", err
+	}
 	if _, err = time.Parse(time.RFC3339Nano, m.CreatedAt); err != nil {
 		return empty, "", &IntegrityError{Component: "manifest", Reason: "invalid creation time"}
 	}

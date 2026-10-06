@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path"
+	"path/filepath"
 
 	"github.com/orka-agents/sessionkit/internal/budget"
 	bundleio "github.com/orka-agents/sessionkit/internal/bundle"
@@ -220,10 +221,10 @@ func install(ctx context.Context, p Plan, hook installHook) (Receipt, error) {
 		}
 		staged, _, e := digestFile(root, state.TempPath, b)
 		if e != nil {
-			return unknown(e)
+			return rejectUnpublished(e)
 		}
 		if staged != receipt.TargetDigest {
-			return unknown(&IntegrityError{Component: "staged rollout", Reason: "digest mismatch"})
+			return rejectUnpublished(&IntegrityError{Component: "staged rollout", Reason: "digest mismatch"})
 		}
 		// From the first publication attempt onward any error other than EEXIST
 		// has an uncertain outcome, including directory durability failures.
@@ -281,7 +282,12 @@ func finishInstall(ctx context.Context, p Plan, receipt Receipt, state journal.S
 	if err := hit("verify"); err != nil {
 		return fail(err)
 	}
-	digest, _, err := digestFile(root, p.TargetPath, b)
+	parent, err := root.Sub(path.Dir(p.TargetPath))
+	if err != nil {
+		return fail(err)
+	}
+	defer func() { _ = parent.Close() }()
+	digest, _, err := digestFile(parent, path.Base(p.TargetPath), b)
 	if err != nil {
 		return fail(err)
 	}
@@ -301,6 +307,9 @@ func finishInstall(ctx context.Context, p Plan, receipt Receipt, state journal.S
 		return fail(err)
 	}
 	if err = root.CheckPath(p.destination.Root); err != nil {
+		return fail(err)
+	}
+	if err = parent.CheckPath(filepath.Join(p.destination.Root, filepath.FromSlash(path.Dir(p.TargetPath)))); err != nil {
 		return fail(err)
 	}
 	if err = b.Check(); err != nil {

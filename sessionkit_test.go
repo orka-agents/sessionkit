@@ -295,6 +295,38 @@ func TestBundleTamperingRejected(t *testing.T) {
 	}
 }
 
+func TestBundleRejectsUndeclaredEntries(t *testing.T) {
+	for _, entry := range []struct {
+		name, kind string
+	}{
+		{"credentials.json", "file"},
+		{"components/extra.jsonl", "file"},
+		{"extra", "directory"},
+		{"credentials-link", "symlink"},
+		{"components/extra-link", "symlink"},
+	} {
+		t.Run(entry.name, func(t *testing.T) {
+			_, bundle, _, _ := testBundle(t)
+			name := filepath.Join(bundle.Dir, entry.name)
+			var err error
+			switch entry.kind {
+			case "file":
+				err = os.WriteFile(name, []byte("undeclared"), 0600)
+			case "directory":
+				err = os.Mkdir(name, 0700)
+			case "symlink":
+				err = os.Symlink(filepath.Join(bundle.Dir, "manifest.json"), name)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := OpenBundle(context.Background(), bundle.Dir, Budget{}); err == nil {
+				t.Fatal("bundle with undeclared entry accepted")
+			}
+		})
+	}
+}
+
 func TestCaptureBudgetsAndExistingBundle(t *testing.T) {
 	src, _, raw := testSource(t)
 	for _, limit := range []Budget{{MaxBytes: int64(len(raw)) * 3}, {MaxTempBytes: int64(len(raw)) - 1}, {MaxBytes: -1}, {Timeout: time.Nanosecond}} {
