@@ -63,6 +63,28 @@ func TestDecodeStrictAndBounded(t *testing.T) {
 	}
 }
 
+func TestExactFieldsPreservesMapKeys(t *testing.T) {
+	tracker := budget.New(context.Background(), model.Budget{})
+	object, err := Decode([]byte(`{"params":{"value":1,"Value":2,"nested":{"field":3,"Field":4}},"rows":[{"value":1}]}`), tracker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema struct {
+		Params map[string]any `json:"params"`
+		Rows   []struct {
+			Value int `json:"value"`
+		} `json:"rows"`
+	}
+	if err := CheckFields(object, schema, "test", tracker); err != nil {
+		t.Fatalf("case-sensitive map keys rejected: %v", err)
+	}
+	object["rows"] = []any{map[string]any{"Value": 1}}
+	var integrity *model.IntegrityError
+	if err := CheckFields(object, schema, "test", tracker); !errors.As(err, &integrity) {
+		t.Fatalf("struct alias in an array accepted: %v", err)
+	}
+}
+
 func TestReaderBoundaries(t *testing.T) {
 	cases := []struct {
 		name, data  string

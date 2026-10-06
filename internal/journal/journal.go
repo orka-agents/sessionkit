@@ -154,7 +154,11 @@ func (j *Journal) Read(tracker *budget.Tracker) (State, error) {
 	if len(data) > 16384 {
 		return s, &model.BudgetError{Limit: "journal bytes"}
 	}
-	if _, err = jsonl.Decode(data, tracker); err != nil {
+	object, err := jsonl.Decode(data, tracker)
+	if err != nil {
+		return s, err
+	}
+	if err = jsonl.CheckFields(object, s, "journal", tracker); err != nil {
 		return s, err
 	}
 	d := json.NewDecoder(bytes.NewReader(data))

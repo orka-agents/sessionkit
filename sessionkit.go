@@ -283,10 +283,14 @@ func openBundle(ctx context.Context, dir string, b *budget.Tracker) (Bundle, str
 	if err != nil {
 		return empty, "", err
 	}
-	if _, err = jsonl.Decode(raw, b); err != nil {
+	object, err := jsonl.Decode(raw, b)
+	if err != nil {
 		return empty, "", err
 	}
 	var m Manifest
+	if err = jsonl.CheckFields(object, m, "manifest", b); err != nil {
+		return empty, "", err
+	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err = decoder.Decode(&m); err != nil {

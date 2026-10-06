@@ -133,10 +133,15 @@ func (p *Plan) UnmarshalJSON(data []byte) error {
 	if len(data) > 1<<20 {
 		return &BudgetError{Limit: "plan bytes"}
 	}
-	if _, err := jsonl.Decode(data, budget.New(context.Background(), Budget{MaxLineBytes: 1 << 20})); err != nil {
+	tracker := budget.New(context.Background(), Budget{MaxLineBytes: 1 << 20})
+	object, err := jsonl.Decode(data, tracker)
+	if err != nil {
 		return err
 	}
 	var wire planEnvelope
+	if err := jsonl.CheckFields(object, wire, "plan", tracker); err != nil {
+		return err
+	}
 	d := json.NewDecoder(bytes.NewReader(data))
 	d.DisallowUnknownFields()
 	if err := d.Decode(&wire); err != nil {

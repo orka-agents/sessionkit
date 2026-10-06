@@ -1,6 +1,7 @@
 package sessionkit
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -400,6 +401,65 @@ func TestVerifiedRetryDetectsJournalReplacement(t *testing.T) {
 	})
 	if receipt.Outcome == Installed || err == nil {
 		t.Fatalf("verified retry lost its configured journal but claimed success: %+v %v", receipt, err)
+	}
+}
+
+func TestArtifactSchemasRejectCaseAliases(t *testing.T) {
+	_, bundle, _, _ := testBundle(t)
+	dst := testDestination(t)
+	plan, err := PlanInstall(context.Background(), bundle, dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(bundle.Dir, "manifest.json")
+	manifest := mustRead(t, manifestPath)
+	for _, data := range [][]byte{
+		bytes.Replace(manifest, []byte(`"bundleFormat": 1`), []byte(`"bundleFormat": 999, "BundleFormat": 1`), 1),
+		bytes.Replace(manifest, []byte("{"), []byte(`{"BundleFormat":999,`), 1),
+		bytes.Replace(manifest, []byte(`"cliVersion": "0.160.0"`), []byte(`"cliVersion": "0.159.1", "CLIVersion": "0.160.0"`), 1),
+	} {
+		if err := os.WriteFile(manifestPath, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := OpenBundle(context.Background(), bundle.Dir, Budget{})
+		var integrity *IntegrityError
+		if !errors.As(err, &integrity) {
+			t.Fatalf("manifest case alias accepted: %v", err)
+		}
+	}
+	if err := os.WriteFile(manifestPath, manifest, 0600); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, data := range [][]byte{
+		bytes.Replace(raw, []byte("{"), []byte(`{"TargetPath":"../escape",`), 1),
+		bytes.Replace(raw, []byte(`"destination":{`), []byte(`"destination":{"Root":"/other",`), 1),
+	} {
+		var decoded Plan
+		var integrity *IntegrityError
+		if err := json.Unmarshal(data, &decoded); !errors.As(err, &integrity) {
+			t.Fatalf("plan case alias accepted: %v", err)
+		}
+	}
+	j, err := journal.Open(context.Background(), dst.JournalDir, plan.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	if err := j.Write(journal.State{Phase: "staged"}, budget.New(context.Background(), Budget{})); err != nil {
+		t.Fatal(err)
+	}
+	journalPath := filepath.Join(dst.JournalDir, plan.OperationID+".json")
+	data := bytes.Replace(mustRead(t, journalPath), []byte(`"phase": "staged"`), []byte(`"phase": "staged", "Phase": "planned"`), 1)
+	if err := os.WriteFile(journalPath, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	var integrity *IntegrityError
+	if _, err := j.Read(budget.New(context.Background(), Budget{})); !errors.As(err, &integrity) {
+		t.Fatalf("journal case alias accepted: %v", err)
 	}
 }
 

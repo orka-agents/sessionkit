@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"reflect"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/orka-agents/sessionkit/internal/budget"
@@ -128,6 +130,81 @@ func Decode(data []byte, tracker *budget.Tracker) (map[string]any, error) {
 		return nil, &Error{"invalid_record", "JSON record must be an object"}
 	}
 	return object, nil
+}
+
+// CheckFields enforces exact struct field names after bounded Decode. Map keys
+// retain their own case-sensitive meaning, including free-form parameter maps.
+func CheckFields(value, target any, component string, tracker *budget.Tracker) error {
+	return checkFields(value, reflect.TypeOf(target), component, tracker)
+}
+
+func checkFields(value any, schema reflect.Type, component string, tracker *budget.Tracker) error {
+	if err := tracker.Check(); err != nil {
+		return err
+	}
+	for schema.Kind() == reflect.Pointer {
+		schema = schema.Elem()
+	}
+	switch schema.Kind() {
+	case reflect.Struct:
+		object, _ := value.(map[string]any)
+		for name, child := range object {
+			field, found := fieldType(schema, name)
+			if !found {
+				return &model.IntegrityError{Component: component, Reason: "invalid schema"}
+			}
+			if err := checkFields(child, field, component, tracker); err != nil {
+				return err
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		array, _ := value.([]any)
+		for _, child := range array {
+			if err := checkFields(child, schema.Elem(), component, tracker); err != nil {
+				return err
+			}
+		}
+	case reflect.Map:
+		object, _ := value.(map[string]any)
+		for _, child := range object {
+			if err := checkFields(child, schema.Elem(), component, tracker); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func fieldType(schema reflect.Type, name string) (reflect.Type, bool) {
+	for index := 0; index < schema.NumField(); index++ {
+		field := schema.Field(index)
+		tag, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		if tag == "-" {
+			continue
+		}
+		if field.Anonymous && tag == "" {
+			embedded := field.Type
+			if embedded.Kind() == reflect.Pointer {
+				embedded = embedded.Elem()
+			}
+			if embedded.Kind() == reflect.Struct {
+				if found, ok := fieldType(embedded, name); ok {
+					return found, true
+				}
+				continue
+			}
+		}
+		if field.PkgPath != "" {
+			continue
+		}
+		if tag == "" {
+			tag = field.Name
+		}
+		if tag == name {
+			return field.Type, true
+		}
+	}
+	return nil, false
 }
 
 type walker struct {
