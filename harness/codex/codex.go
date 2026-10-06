@@ -228,6 +228,7 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 		}
 		inspection.Records.Total++
 		inspection.Records.ByType[kind]++
+		rootsChanged := false
 		switch kind {
 		case "inter_agent_communication", "inter_agent_communication_metadata":
 			return fail(reject(relative, "lineage", "inter-agent communication is not supported", ordinal))
@@ -235,11 +236,12 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 			if inspection.Records.Total != 1 {
 				return fail(reject(relative, "session_meta", "additional session_meta records are not supported", ordinal))
 			}
-			if err := metadata(&inspection, payload, relative, ordinal); err != nil {
+			if err := metadata(&inspection, payload, relative, ordinal, tracker); err != nil {
 				return fail(err)
 			}
+			rootsChanged = true
 		case "response_item":
-			if err := responseItem(payload, pending, relative, ordinal); err != nil {
+			if err := responseItem(payload, pending, relative, ordinal, tracker); err != nil {
 				return fail(err)
 			}
 			itemKind := payload["type"].(string)
@@ -274,6 +276,9 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 					return fail(reject(relative, "compacted", "replacement history metadata must match the history array", ordinal))
 				}
 				for _, entry := range metadata {
+					if err := tracker.Check(); err != nil {
+						return fail(err)
+					}
 					if _, ok := entry.(map[string]any); !ok {
 						return fail(reject(relative, "compacted", "replacement history metadata entries must be objects", ordinal))
 					}
@@ -283,7 +288,7 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 			replacementCommands := make(map[string]bool)
 			for _, item := range history {
 				payload, _ := item.(map[string]any)
-				if err := responseItem(payload, replacementCalls, relative, ordinal); err != nil {
+				if err := responseItem(payload, replacementCalls, relative, ordinal, tracker); err != nil {
 					return fail(err)
 				}
 				if payload["type"] == "function_call" && payload["name"] == "exec_command" {
@@ -356,22 +361,33 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 				}
 				inspection.LatestCWD = cwd
 				if roots, present := settings["runtime_workspace_roots"]; present && roots != nil {
-					parsed, ok := stringList(roots)
+					parsed, ok, err := stringList(roots, tracker)
+					if err != nil {
+						return fail(err)
+					}
 					if !ok {
 						return fail(reject(relative, "workspace_roots", "runtime workspace roots must be strings", ordinal))
 					}
 					inspection.RuntimeWorkspaceRoots = parsed
+					rootsChanged = true
 				}
 				if provider, ok := settings["model_provider_id"].(string); ok {
 					inspection.ModelProvider = provider
 				}
 			}
 		}
-		walkWarnings(record, ordinal, warn)
-		for _, root := range inspection.RuntimeWorkspaceRoots {
-			if !under(inspection.RecordedCWD, root) {
-				warn("workspace_root_outside_cwd", "runtime workspace roots include a path outside the recorded cwd", ordinal)
-				break
+		if err := walkWarnings(record, ordinal, warn, tracker); err != nil {
+			return fail(err)
+		}
+		if rootsChanged && !warned["workspace_root_outside_cwd"] {
+			for _, root := range inspection.RuntimeWorkspaceRoots {
+				if err := tracker.Check(); err != nil {
+					return fail(err)
+				}
+				if !under(inspection.RecordedCWD, root) {
+					warn("workspace_root_outside_cwd", "runtime workspace roots include a path outside the recorded cwd", ordinal)
+					break
+				}
 			}
 		}
 	}
@@ -381,6 +397,9 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 	if len(turns) > 0 {
 		ordinal := inspection.Records.LastOrdinal
 		for _, started := range turns {
+			if err := tracker.Check(); err != nil {
+				return fail(err)
+			}
 			ordinal = min(ordinal, started)
 		}
 		return fail(reject(relative, "in_flight_turn", "turn has no matching completion or abort", ordinal))
@@ -388,6 +407,9 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 	if len(pending) > 0 {
 		ordinal := inspection.Records.LastOrdinal
 		for _, call := range pending {
+			if err := tracker.Check(); err != nil {
+				return fail(err)
+			}
 			if call.ordinal < ordinal {
 				ordinal = call.ordinal
 			}
@@ -397,6 +419,9 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 	if len(commands) > 0 {
 		ordinal := inspection.Records.LastOrdinal
 		for _, started := range commands {
+			if err := tracker.Check(); err != nil {
+				return fail(err)
+			}
 			ordinal = min(ordinal, started)
 		}
 		return fail(reject(relative, "active_command", "exec command has no terminal command completion", ordinal))
@@ -413,7 +438,10 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 	return inspection, nil
 }
 
-func responseItem(payload map[string]any, pending map[string]toolCall, component string, ordinal uint64) error {
+func responseItem(payload map[string]any, pending map[string]toolCall, component string, ordinal uint64, tracker *budget.Tracker) error {
+	if err := tracker.Check(); err != nil {
+		return err
+	}
 	kind, ok := payload["type"].(string)
 	if !ok || kind == "" {
 		return reject(component, "response_item", "response item type must be a nonempty string", ordinal)
@@ -447,7 +475,11 @@ func responseItem(payload map[string]any, pending map[string]toolCall, component
 		if !ok || !exists || call.kind+"_output" != kind {
 			return reject(component, "orphan_tool_output", "tool output has no matching pending call", ordinal)
 		}
-		if !toolOutput(payload["output"]) {
+		valid, err := toolOutput(payload["output"], tracker)
+		if err != nil {
+			return err
+		}
+		if !valid {
 			return reject(component, "response_item", "tool output must be text or native content items", ordinal)
 		}
 		delete(pending, callID)
@@ -455,15 +487,18 @@ func responseItem(payload map[string]any, pending map[string]toolCall, component
 	return nil
 }
 
-func toolOutput(value any) bool {
+func toolOutput(value any, tracker *budget.Tracker) (bool, error) {
 	if _, ok := value.(string); ok {
-		return true
+		return true, nil
 	}
 	items, ok := value.([]any)
 	if !ok {
-		return false
+		return false, nil
 	}
 	for _, value := range items {
+		if err := tracker.Check(); err != nil {
+			return false, err
+		}
 		item, _ := value.(map[string]any)
 		field := ""
 		switch item["type"] {
@@ -477,20 +512,20 @@ func toolOutput(value any) bool {
 			_, url := item["image_url"].(string)
 			_, file := item["file_id"].(string)
 			if !url && !file {
-				return false
+				return false, nil
 			}
 			if detail := item["detail"]; detail != nil && detail != "auto" && detail != "low" && detail != "high" && detail != "original" {
-				return false
+				return false, nil
 			}
 			continue
 		default:
-			return false
+			return false, nil
 		}
 		if _, ok := item[field].(string); !ok {
-			return false
+			return false, nil
 		}
 	}
-	return true
+	return true, nil
 }
 
 func parseError(component string, err error) error {
@@ -508,23 +543,32 @@ func unsigned(value any) (uint64, bool) {
 	n, err := strconv.ParseUint(string(number), 10, 64)
 	return n, err == nil
 }
-func stringList(value any) ([]string, bool) {
+func stringList(value any, tracker *budget.Tracker) ([]string, bool, error) {
+	if err := tracker.Check(); err != nil {
+		return nil, false, err
+	}
 	array, ok := value.([]any)
 	if !ok {
-		return nil, false
+		return nil, false, nil
 	}
 	result := make([]string, 0, len(array))
 	for _, v := range array {
+		if err := tracker.Check(); err != nil {
+			return nil, false, err
+		}
 		s, ok := v.(string)
 		if !ok {
-			return nil, false
+			return nil, false, nil
 		}
 		result = append(result, s)
 	}
-	return result, true
+	return result, true, nil
 }
 
-func metadata(out *model.Inspection, payload map[string]any, component string, ordinal uint64) error {
+func metadata(out *model.Inspection, payload map[string]any, component string, ordinal uint64, tracker *budget.Tracker) error {
+	if err := tracker.Check(); err != nil {
+		return err
+	}
 	bad := func(code, message string) error { return reject(component, code, message, ordinal) }
 	if payload == nil {
 		return bad("session_meta", "session metadata payload must be an object")
@@ -568,8 +612,14 @@ func metadata(out *model.Inspection, payload map[string]any, component string, o
 	}
 	if object, ok := source.(map[string]any); ok {
 		for key := range object {
+			if err := tracker.Check(); err != nil {
+				return err
+			}
 			if strings.EqualFold(key, "subagent") {
 				return bad("subagent", "subagent sessions are not supported")
+			}
+			if strings.EqualFold(key, "internal") {
+				return bad("lineage", "internal sessions are not supported")
 			}
 		}
 	}
@@ -580,7 +630,10 @@ func metadata(out *model.Inspection, payload map[string]any, component string, o
 	out.RecordedCWD = cwd
 	out.LatestCWD = cwd
 	if value := payload["runtime_workspace_roots"]; value != nil {
-		roots, ok := stringList(value)
+		roots, ok, err := stringList(value, tracker)
+		if err != nil {
+			return err
+		}
 		if !ok {
 			return bad("workspace_roots", "runtime workspace roots must be strings")
 		}
@@ -599,7 +652,10 @@ func under(cwd, root string) bool {
 	relative, err := filepath.Rel(cwd, root)
 	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
-func walkWarnings(value any, ordinal uint64, warn func(string, string, uint64)) {
+func walkWarnings(value any, ordinal uint64, warn func(string, string, uint64), tracker *budget.Tracker) error {
+	if err := tracker.Check(); err != nil {
+		return err
+	}
 	switch value := value.(type) {
 	case map[string]any:
 		for key, child := range value {
@@ -613,11 +669,16 @@ func walkWarnings(value any, ordinal uint64, warn func(string, string, uint64)) 
 					}
 				}
 			}
-			walkWarnings(child, ordinal, warn)
+			if err := walkWarnings(child, ordinal, warn, tracker); err != nil {
+				return err
+			}
 		}
 	case []any:
 		for _, child := range value {
-			walkWarnings(child, ordinal, warn)
+			if err := walkWarnings(child, ordinal, warn, tracker); err != nil {
+				return err
+			}
 		}
 	}
+	return nil
 }

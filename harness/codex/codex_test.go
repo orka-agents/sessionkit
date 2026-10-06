@@ -37,6 +37,29 @@ func inspect(t *testing.T, data string) (model.Inspection, error) {
 	return (Adapter{}).Inspect(context.Background(), strings.NewReader(data), testPath, budget.New(context.Background(), model.Budget{}))
 }
 
+func TestWarningTraversalStopsWhenCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tracker := budget.New(ctx, model.Budget{})
+	warnings := 0
+	err := walkWarnings([]any{
+		map[string]any{"encrypted_content": "first"},
+		map[string]any{"encrypted_content": "second"},
+	}, 1, func(string, string, uint64) {
+		warnings++
+		cancel()
+	}, tracker)
+	if !errors.Is(err, context.Canceled) || warnings != 1 {
+		t.Fatalf("traversal continued after cancellation: warnings=%d err=%v", warnings, err)
+	}
+	if _, _, err := stringList([]any{"/work"}, tracker); !errors.Is(err, context.Canceled) {
+		t.Fatalf("workspace roots ignored cancellation: %v", err)
+	}
+	if _, err := toolOutput([]any{map[string]any{"type": "input_text", "text": "output"}}, tracker); !errors.Is(err, context.Canceled) {
+		t.Fatalf("structured tool output ignored cancellation: %v", err)
+	}
+}
+
 func TestInspectionPreservesNumbersAndSummarizesOwnedSettings(t *testing.T) {
 	data := line(t, 0, "session_meta", meta()) +
 		line(t, 1, "response_item", map[string]any{"type": "function_call", "call_id": "call-1", "name": "shell", "arguments": `{"command":"echo nonce"}`}) +
@@ -65,6 +88,18 @@ func TestInspectionPreservesNumbersAndSummarizesOwnedSettings(t *testing.T) {
 	if !reflect.DeepEqual(got.Omitted, []string{"thread name", "git metadata", "memory mode"}) {
 		t.Fatalf("omissions: %+v", got.Omitted)
 	}
+	rootWarnings := 0
+	for _, warning := range got.Warnings {
+		if warning.Code == "workspace_root_outside_cwd" {
+			rootWarnings++
+			if warning.Ordinal != 4 {
+				t.Fatalf("workspace root warning must identify the settings change: %+v", warning)
+			}
+		}
+	}
+	if rootWarnings != 1 {
+		t.Fatalf("expected one workspace root warning, got %d", rootWarnings)
+	}
 }
 
 func TestProfileRejections(t *testing.T) {
@@ -88,6 +123,8 @@ func TestProfileRejections(t *testing.T) {
 			m["source"] = map[string]any{"subagent": map[string]any{"thread_spawn": map[string]any{"parent_thread_id": otherThread}}}
 		}},
 		{name: "subagent string", code: "subagent", mutate: func(m map[string]any) { m["source"] = "SubAgent" }},
+		{name: "internal guardian", code: "lineage", mutate: func(m map[string]any) { m["source"] = map[string]any{"internal": "guardian"} }},
+		{name: "internal memory consolidation", code: "lineage", mutate: func(m map[string]any) { m["source"] = map[string]any{"internal": "memory_consolidation"} }},
 		{name: "subagent thread source", code: "subagent", mutate: func(m map[string]any) { m["thread_source"] = "subagent" }},
 		{name: "subagent nickname", code: "subagent", mutate: func(m map[string]any) { m["agent_nickname"] = "worker" }},
 		{name: "subagent role", code: "subagent", mutate: func(m map[string]any) { m["agent_role"] = "worker" }},

@@ -288,16 +288,19 @@ func finishInstall(ctx context.Context, p Plan, receipt Receipt, state journal.S
 	if digest != receipt.TargetDigest {
 		return fail(&IntegrityError{Component: "rollout", Reason: "installed digest mismatch"})
 	}
-	if err = root.CheckPath(p.destination.Root); err != nil {
-		return fail(err)
-	}
 	if state.Phase != "verified" {
 		state.Phase = "verified"
 		if err = j.Write(state, b); err != nil {
 			return fail(err)
 		}
 	}
+	if err = hit("journal_verified"); err != nil {
+		return fail(err)
+	}
 	if err = j.CheckPath(); err != nil {
+		return fail(err)
+	}
+	if err = root.CheckPath(p.destination.Root); err != nil {
 		return fail(err)
 	}
 	if err = b.Check(); err != nil {

@@ -2,6 +2,7 @@ package sessionkit
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -142,6 +143,57 @@ func TestRootReplacementDuringPublicationDoesNotReportInstalled(t *testing.T) {
 	}
 	if receipt.Outcome == Installed || err == nil {
 		t.Fatalf("installation went to moved root but claimed success: %+v %v", receipt, err)
+	}
+}
+
+func TestRootReplacementAfterJournalVerificationDoesNotReportInstalled(t *testing.T) {
+	_, bundle, rel, raw := testBundle(t)
+	dst := testDestination(t)
+	plan, err := PlanInstall(context.Background(), bundle, dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := dst.Root + "-moved"
+	t.Cleanup(func() { _ = os.RemoveAll(moved) })
+	receipt, err := install(context.Background(), plan, func(phase string) error {
+		if phase != "journal_verified" {
+			return nil
+		}
+		data, err := os.ReadFile(filepath.Join(dst.JournalDir, plan.OperationID+".json"))
+		if err != nil {
+			return err
+		}
+		var state journal.State
+		if err := json.Unmarshal(data, &state); err != nil {
+			return err
+		}
+		if state.Phase != "verified" {
+			return fmt.Errorf("journal phase is %q, want verified", state.Phase)
+		}
+		if err := os.Rename(dst.Root, moved); err != nil {
+			return err
+		}
+		return os.Mkdir(dst.Root, 0700)
+	})
+	var unknown *UnknownOutcomeError
+	if receipt.Outcome != Unknown || !errors.As(err, &unknown) {
+		t.Fatalf("destination changed after journal write but install claimed success: %+v %v", receipt, err)
+	}
+	if _, err := os.Stat(filepath.Join(dst.Root, rel)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("replacement destination contains target: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(moved, rel)); err != nil || string(got) != string(raw) {
+		t.Fatalf("published target changed in retained root: %v", err)
+	}
+	if err := os.Remove(dst.Root); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(moved, dst.Root); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err = Install(context.Background(), plan)
+	if err != nil || receipt.Outcome != Installed {
+		t.Fatalf("same-plan retry after restoring destination: %+v %v", receipt, err)
 	}
 }
 
