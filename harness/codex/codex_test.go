@@ -243,6 +243,33 @@ func TestExecCommandRequiresProcessCompletion(t *testing.T) {
 	assertRejection(t, err, "active_command")
 }
 
+func TestCompactionExecCommandCompletion(t *testing.T) {
+	call := map[string]any{"type": "function_call", "name": "exec_command", "call_id": "command", "arguments": "{}"}
+	output := map[string]any{"type": "function_call_output", "call_id": "command", "output": "process yielded"}
+	completion := map[string]any{"type": "item_completed", "thread_id": testThread, "item": map[string]any{"type": "CommandExecution", "id": "command", "status": "completed"}}
+	for _, when := range []string{"missing", "before", "after"} {
+		t.Run(when, func(t *testing.T) {
+			data := line(t, 0, "session_meta", meta())
+			if when == "before" {
+				data += line(t, 1, "event_msg", completion)
+			}
+			data += line(t, 2, "compacted", map[string]any{"message": "summary", "window_number": 1, "replacement_history": []any{call, output}})
+			if when == "after" {
+				data += line(t, 3, "event_msg", completion)
+			}
+			got, err := inspect(t, data)
+			if when == "missing" {
+				assertRejection(t, err, "active_command")
+				if got.Rejections[0].Ordinal != 2 {
+					t.Fatalf("rejection must identify the restoring compaction: %+v", got.Rejections)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestCustomToolsCompactionAndWarnings(t *testing.T) {
 	metadata := meta()
 	metadata["git"] = map[string]any{"repository_url": "https://user:secret@example.test/repo"}

@@ -179,6 +179,7 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 	pending := make(map[string]toolCall)
 	turns := make(map[string]uint64)
 	commands := make(map[string]uint64)
+	completedCommands := make(map[string]bool)
 	warned := make(map[string]bool)
 	warn := func(code, message string, ordinal uint64) {
 		if !warned[code] {
@@ -252,6 +253,7 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 						return fail(reject(relative, "active_command", "exec command call ID is already active", ordinal))
 					}
 					commands[id] = ordinal
+					delete(completedCommands, id)
 				}
 			case "function_call_output", "custom_tool_call_output":
 				inspection.Records.ToolOutputs++
@@ -283,6 +285,12 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 				if err := responseItem(payload, replacementCalls, relative, ordinal); err != nil {
 					return fail(err)
 				}
+				if payload["type"] == "function_call" && payload["name"] == "exec_command" {
+					id := payload["call_id"].(string)
+					if _, active := commands[id]; !active && !completedCommands[id] {
+						commands[id] = ordinal
+					}
+				}
 			}
 			if len(replacementCalls) > 0 {
 				return fail(reject(relative, "orphan_tool_call", "compaction tool call has no matching output", ordinal))
@@ -308,6 +316,7 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 					case "completed", "failed", "declined":
 						if id, ok := item["id"].(string); ok {
 							delete(commands, id)
+							completedCommands[id] = true
 						}
 					}
 				}

@@ -100,6 +100,9 @@ components/rollout.jsonl
 ```
 
 Keep bundle files private and unchanged during handoff operations.
+During capture, the caller must exclusively control the destination bundle name
+and its parent directory. Concurrent renaming or replacement during directory
+creation requires a separate coordination and publication contract.
 `Bundle.Manifest` is a verification snapshot. `PlanInstall` revalidates the files
 and `Install` checks the resulting plan's frozen digest before publication.
 Concurrent edits to bundle files require caller-owned coordination.
