@@ -155,7 +155,9 @@ func capture(ctx context.Context, src Source, o CaptureOptions, hook func(string
 		out, err = parent.Sub(filepath.Base(o.BundleDir))
 	}
 	if err != nil {
-		_ = parent.RemoveDir(filepath.Base(o.BundleDir))
+		if parent.RemoveDir(filepath.Base(o.BundleDir)) == nil {
+			_ = parent.SyncDir(".")
+		}
 		return empty, err
 	}
 	defer func() { _ = out.Close() }()
@@ -167,7 +169,9 @@ func capture(ctx context.Context, src Source, o CaptureOptions, hook func(string
 			_ = out.Remove("manifest.json")
 			_ = out.RemoveDir("components")
 			if ownsPath {
-				_ = parent.RemoveDir(filepath.Base(o.BundleDir))
+				if parent.RemoveDir(filepath.Base(o.BundleDir)) == nil {
+					_ = parent.SyncDir(".")
+				}
 			}
 		}
 	}()

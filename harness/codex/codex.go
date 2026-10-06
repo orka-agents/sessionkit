@@ -222,6 +222,11 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 		if !ok || kind == "" {
 			return fail(reject(relative, "record_type", "record type must be a nonempty string", ordinal))
 		}
+		switch kind {
+		case "session_meta", "response_item", "compacted", "turn_context", "token_usage_record", "world_state", "retained_context", "security_risk_score", "event_msg", "realtime_item", "inter_agent_communication", "inter_agent_communication_metadata":
+		default:
+			return fail(reject(relative, "record_type", "record type is not supported by the pinned native profile", ordinal))
+		}
 		payload, objectPayload := record["payload"].(map[string]any)
 		switch kind {
 		case "session_meta", "response_item", "compacted", "turn_context", "event_msg", "token_usage_record", "world_state":
@@ -365,6 +370,9 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 					return fail(reject(relative, "turn_lifecycle", "turn abort reason is not supported by the native schema", ordinal))
 				}
 				if turnID, ok := payload["turn_id"].(string); ok && turnID != "" {
+					if _, exists := turns[turnID]; !exists {
+						return fail(reject(relative, "turn_lifecycle", "turn abort has no matching start", ordinal))
+					}
 					delete(turns, turnID)
 				}
 			}
@@ -573,6 +581,11 @@ func responseItem(payload map[string]any, pending map[string]toolCall, component
 			return reject(component, "response_item", "tool output must be text or native content items", ordinal)
 		}
 		delete(pending, callID)
+	case "message", "additional_tools", "reasoning", "web_search_call", "image_generation_call", "compaction", "compaction_summary", "configuration_update", "context_compaction":
+		// Native passive items remain byte-identical; their nested payloads are
+		// produced by the pinned client rather than reconstructed by this adapter.
+	default:
+		return reject(component, "response_item", "response item type is not supported by the pinned native profile", ordinal)
 	}
 	return nil
 }

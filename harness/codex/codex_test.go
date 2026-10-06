@@ -67,8 +67,8 @@ func TestInspectionPreservesNumbersAndSummarizesOwnedSettings(t *testing.T) {
 		line(t, 2, "response_item", map[string]any{"type": "function_call_output", "call_id": "call-1", "output": "nonce"}) +
 		line(t, 4, "event_msg", map[string]any{"type": "thread_settings_applied", "thread_id": testThread, "thread_settings": map[string]any{"cwd": "/new/work", "runtime_workspace_roots": []string{"/new/work"}, "model_provider_id": "new-provider"}}) +
 		line(t, 4, "event_msg", map[string]any{"type": "thread_settings_applied", "thread_id": otherThread, "thread_settings": map[string]any{"cwd": "/wrong/work"}}) +
-		line(t, 5, "response_item", map[string]any{"type": "future_item", "decimal": json.Number("1.234567890123456789")}) +
-		line(t, 9007199254740993, "future_record", map[string]any{"number": json.Number("9007199254740993")})
+		line(t, 5, "response_item", map[string]any{"type": "additional_tools", "role": "developer", "tools": []any{map[string]any{"decimal": json.Number("1.234567890123456789")}}}) +
+		line(t, 9007199254740993, "world_state", map[string]any{"full": true, "state": map[string]any{"number": json.Number("9007199254740993")}})
 	got, err := inspect(t, data)
 	if err != nil {
 		t.Fatal(err)
@@ -79,7 +79,7 @@ func TestInspectionPreservesNumbersAndSummarizesOwnedSettings(t *testing.T) {
 	if got.RecordedCWD != "/source/work" || got.LatestCWD != "/new/work" || got.ModelProvider != "new-provider" || !reflect.DeepEqual(got.RuntimeWorkspaceRoots, []string{"/new/work"}) {
 		t.Fatalf("settings: %+v", got)
 	}
-	if got.Records.Total != 7 || got.Records.ToolPairs != 1 || got.Records.OrdinalGaps != 2 || got.Records.LastOrdinal != 9007199254740993 || got.Records.ResponseItems["future_item"] != 1 || got.Records.ByType["future_record"] != 1 {
+	if got.Records.Total != 7 || got.Records.ToolPairs != 1 || got.Records.OrdinalGaps != 2 || got.Records.LastOrdinal != 9007199254740993 || got.Records.ResponseItems["additional_tools"] != 1 || got.Records.ByType["world_state"] != 1 {
 		t.Fatalf("records: %+v", got.Records)
 	}
 	digest := sha256.Sum256([]byte(data))
@@ -148,6 +148,7 @@ func TestProfileRejections(t *testing.T) {
 		{name: "inter-agent communication", code: "lineage", suffix: line(t, 1, "inter_agent_communication", map[string]any{})},
 		{name: "inter-agent metadata", code: "lineage", suffix: line(t, 1, "inter_agent_communication_metadata", map[string]any{})},
 		{name: "second metadata", code: "session_meta", suffix: line(t, 1, "session_meta", meta())},
+		{name: "unknown record type", code: "record_type", suffix: line(t, 1, "future_record", map[string]any{})},
 		{name: "orphan output", code: "orphan_tool_output", suffix: line(t, 1, "response_item", map[string]any{"type": "function_call_output", "call_id": "absent", "output": "private body"})},
 		{name: "orphan call", code: "orphan_tool_call", suffix: line(t, 1, "response_item", map[string]any{"type": "custom_tool_call", "call_id": "absent", "name": "test", "input": "private body"})},
 		{name: "missing final ordinal", code: "ordinal", suffix: `{"type":"response_item","payload":{"type":"message"}}` + "\n"},
@@ -194,7 +195,7 @@ func TestRecordTimestamps(t *testing.T) {
 				data := ""
 				if !first {
 					data = line(t, 0, "session_meta", meta())
-					record["ordinal"], record["type"], record["payload"] = 1, "future_record", nil
+					record["ordinal"], record["type"], record["payload"] = 1, "world_state", map[string]any{"full": true, "state": map[string]any{}}
 				}
 				if tc.name == "missing" {
 					delete(record, "timestamp")
@@ -535,7 +536,9 @@ func TestTurnLifecycle(t *testing.T) {
 		{"orphan completion", []map[string]any{event("task_complete", "turn-1")}, "turn_lifecycle"},
 		{"duplicate completion", []map[string]any{event("task_started", "turn-1"), event("task_complete", "turn-1"), event("task_complete", "turn-1")}, "turn_lifecycle"},
 		{"orphan alias completion", []map[string]any{event("turn_complete", "turn-1")}, "turn_lifecycle"},
-		{"unmatched abort", []map[string]any{event("task_started", "turn-1"), event("turn_aborted", "turn-2")}, "in_flight_turn"},
+		{"unmatched abort", []map[string]any{event("task_started", "turn-1"), event("turn_aborted", "turn-2")}, "turn_lifecycle"},
+		{"orphan abort", []map[string]any{event("turn_aborted", "turn-1")}, "turn_lifecycle"},
+		{"duplicate abort", []map[string]any{event("task_started", "turn-1"), event("turn_aborted", "turn-1"), event("turn_aborted", "turn-1")}, "turn_lifecycle"},
 		{"unidentified abort", []map[string]any{event("task_started", "turn-1"), {"type": "turn_aborted", "reason": "interrupted"}}, "in_flight_turn"},
 		{"multiple outstanding turns", []map[string]any{event("task_started", "turn-1"), event("task_started", "turn-2"), event("task_complete", "turn-2")}, "in_flight_turn"},
 		{"missing ID", []map[string]any{{"type": "task_started"}}, "turn_lifecycle"},
@@ -619,6 +622,9 @@ func TestUnvalidatedToolShapesReject(t *testing.T) {
 		{"tool_search_call", "unsupported_tool"},
 		{"tool_search_output", "unsupported_tool"},
 		{"agent_message", "subagent"},
+		{"future_item", "response_item"},
+		{"other", "response_item"},
+		{"compaction_trigger", "response_item"},
 	} {
 		kind := tc.kind
 		for _, compacted := range []bool{false, true} {

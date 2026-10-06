@@ -121,7 +121,7 @@ func TestCaptureRejectsMovedBundlePath(t *testing.T) {
 }
 
 func TestCaptureCleansUpDuringCreation(t *testing.T) {
-	for _, boundary := range []string{"bundle_directory_created", "bundle_created"} {
+	for _, boundary := range []string{"bundle_directory_created", "bundle_created", "copied"} {
 		t.Run(boundary, func(t *testing.T) {
 			src, _, _ := testSource(t)
 			dir := filepath.Join(tempDir(t), "bundle")
