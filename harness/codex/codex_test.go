@@ -195,6 +195,50 @@ func TestSubagentActivityRejectsAfterParentCompletes(t *testing.T) {
 	}
 }
 
+func TestExecCommandRequiresProcessCompletion(t *testing.T) {
+	call := map[string]any{"type": "function_call", "name": "exec_command", "call_id": "command", "arguments": "{}"}
+	output := map[string]any{"type": "function_call_output", "call_id": "command", "output": "process still running"}
+	prefix := line(t, 0, "session_meta", meta()) +
+		line(t, 1, "response_item", call) + line(t, 2, "response_item", output) +
+		line(t, 3, "event_msg", map[string]any{"type": "task_started", "turn_id": "parent"}) +
+		line(t, 4, "event_msg", map[string]any{"type": "task_complete", "turn_id": "parent"})
+	for _, compacted := range []bool{false, true} {
+		for _, tc := range []struct {
+			name, id, thread, status string
+			valid                    bool
+		}{
+			{"no completion", "", "", "", false},
+			{"other command", "other", testThread, "completed", false},
+			{"other thread", "command", otherThread, "completed", false},
+			{"in progress", "command", testThread, "in_progress", false},
+			{"completed", "command", testThread, "completed", true},
+			{"failed", "command", testThread, "failed", true},
+			{"declined", "command", testThread, "declined", true},
+		} {
+			t.Run(tc.name+map[bool]string{true: "/compacted", false: "/plain"}[compacted], func(t *testing.T) {
+				data := prefix
+				if compacted {
+					data += line(t, 5, "compacted", map[string]any{"message": "summary", "replacement_history": []any{}, "window_number": 1})
+				}
+				if tc.id != "" {
+					data += line(t, 6, "event_msg", map[string]any{"type": "item_completed", "thread_id": tc.thread, "item": map[string]any{"type": "CommandExecution", "id": tc.id, "status": tc.status}})
+				}
+				got, err := inspect(t, data)
+				if tc.valid {
+					if err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					assertRejection(t, err, "active_command")
+					if got.Rejections[0].Ordinal != 1 {
+						t.Fatalf("rejection must identify the command call: %+v", got.Rejections)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestCustomToolsCompactionAndWarnings(t *testing.T) {
 	metadata := meta()
 	metadata["git"] = map[string]any{"repository_url": "https://user:secret@example.test/repo"}

@@ -147,8 +147,13 @@ func capture(ctx context.Context, src Source, o CaptureOptions, hook func(string
 	if err = parent.Mkdir(filepath.Base(o.BundleDir)); err != nil {
 		return empty, err
 	}
-	out, err := parent.Sub(filepath.Base(o.BundleDir))
+	var out *fsx.Root
+	err = hit("bundle_directory_created")
+	if err == nil {
+		out, err = parent.Sub(filepath.Base(o.BundleDir))
+	}
 	if err != nil {
+		_ = parent.RemoveDir(filepath.Base(o.BundleDir))
 		return empty, err
 	}
 	defer func() { _ = out.Close() }()

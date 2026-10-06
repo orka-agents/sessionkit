@@ -178,6 +178,7 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 	reader := jsonl.New(counted, tracker)
 	pending := make(map[string]toolCall)
 	turns := make(map[string]uint64)
+	commands := make(map[string]uint64)
 	warned := make(map[string]bool)
 	warn := func(code, message string, ordinal uint64) {
 		if !warned[code] {
@@ -245,6 +246,9 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 			switch itemKind {
 			case "function_call", "custom_tool_call":
 				inspection.Records.ToolCalls++
+				if itemKind == "function_call" && payload["name"] == "exec_command" {
+					commands[payload["call_id"].(string)] = ordinal
+				}
 			case "function_call_output", "custom_tool_call_output":
 				inspection.Records.ToolOutputs++
 				inspection.Records.ToolPairs++
@@ -294,6 +298,14 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 				item, _ := payload["item"].(map[string]any)
 				if item["type"] == "SubAgentActivity" || item["type"] == "CollabAgentToolCall" {
 					return fail(reject(relative, "subagent", "subagent turn items are not supported", ordinal))
+				}
+				if eventKind == "item_completed" && item["type"] == "CommandExecution" && payload["thread_id"] == inspection.ThreadID {
+					switch item["status"] {
+					case "completed", "failed", "declined":
+						if id, ok := item["id"].(string); ok {
+							delete(commands, id)
+						}
+					}
 				}
 			case "task_started", "turn_started", "task_complete", "turn_complete":
 				turnID, ok := payload["turn_id"].(string)
@@ -358,6 +370,13 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 			}
 		}
 		return fail(reject(relative, "orphan_tool_call", "tool call has no matching output", ordinal))
+	}
+	if len(commands) > 0 {
+		ordinal := inspection.Records.LastOrdinal
+		for _, started := range commands {
+			ordinal = min(ordinal, started)
+		}
+		return fail(reject(relative, "active_command", "exec command has no terminal command completion", ordinal))
 	}
 	if inspection.Records.OrdinalGaps > 0 {
 		warn("ordinal_gaps", "record ordinal gaps are preserved", inspection.Records.LastOrdinal)

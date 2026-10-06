@@ -26,7 +26,7 @@ Changing a version label does not make a legacy file supported.
 | Context | Preserve all bytes, unknown record types, function/custom tool calls/results, and complete compaction records. Reject incomplete compactions and orphan tool calls or outputs in effective history, including replacement history. Local-shell and tool-search records are rejected until native validation is available. |
 | Lineage | Reject non-null `history_base`, fork/parent/subagent fields, subagent sources and activity/collaboration items, inter-agent communication records, additional metadata records, and `_<rolloutId>` filename suffixes. |
 | Relocation | No rewrites. The caller overrides cwd, runtime workspace roots, provider, and policy at resume. |
-| Quiescence | Acquire Codex's coordination lock, then try the thread's writer lock. An active writer or unfinished turn is a typed rejection. Hold the thread lock through copying and digest rechecks using the same home descriptor. |
+| Quiescence | Acquire Codex's coordination lock, then try the thread's writer lock. An active writer, unfinished turn, or `exec_command` without a terminal `CommandExecution` completion is a typed rejection. Hold the thread lock through copying and digest rechecks using the same home descriptor. |
 | Installation | Private staging, file fsync, hard-link publication without replacement, directory fsync, and digest verification. Probe the destination thread's writer lock while holding Codex's coordination lock across publication. |
 | Omitted metadata | Thread name, git metadata, and memory mode are reported as omitted. Their paginated metadata lives outside the selected rollout. Any historical metadata already in the file remains byte-identical. |
 | Unsupported files | Legacy, compressed `.jsonl.zst`, archived sources, and multi-file lineage. |
@@ -173,6 +173,12 @@ and elapsed time. Zero fields choose these defaults; negative limits reject:
 | JSON tokens and traversed filesystem entries | 10,000,000 |
 | Temporary bytes written/reserved | 1 GiB |
 | Elapsed time | 5 minutes |
+
+`Inspect`, `Capture`, and `OpenBundle` accept caller budgets. `PlanInstall`,
+`Install`, and `Verify` use the fixed defaults above. Raising a capture budget
+does not raise installation limits; large bundles captured with custom limits
+can exceed installation's cumulative read budget. Configurable installation
+budgets are a separate API follow-up.
 
 Manifests and journals also have fixed 1 MiB and 16 KiB caps. A capture reads the
 rollout four times for source hashing, copying, source rechecking, and inspection;

@@ -120,24 +120,28 @@ func TestCaptureRejectsMovedBundlePath(t *testing.T) {
 	}
 }
 
-func TestCaptureCleansUpAtCreationSyncFailure(t *testing.T) {
-	src, _, _ := testSource(t)
-	dir := filepath.Join(tempDir(t), "bundle")
-	failure := errors.New("creation sync failed")
-	_, err := capture(context.Background(), src, CaptureOptions{BundleDir: dir}, func(phase string) error {
-		if phase == "bundle_created" {
-			return failure
-		}
-		return nil
-	})
-	if !errors.Is(err, failure) {
-		t.Fatalf("expected creation failure, got %v", err)
-	}
-	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("failed capture left a bundle directory: %v", err)
-	}
-	if _, err := Capture(context.Background(), src, CaptureOptions{BundleDir: dir}); err != nil {
-		t.Fatalf("retry after failed creation: %v", err)
+func TestCaptureCleansUpDuringCreation(t *testing.T) {
+	for _, boundary := range []string{"bundle_directory_created", "bundle_created"} {
+		t.Run(boundary, func(t *testing.T) {
+			src, _, _ := testSource(t)
+			dir := filepath.Join(tempDir(t), "bundle")
+			failure := errors.New("bundle creation failed")
+			_, err := capture(context.Background(), src, CaptureOptions{BundleDir: dir}, func(phase string) error {
+				if phase == boundary {
+					return failure
+				}
+				return nil
+			})
+			if !errors.Is(err, failure) {
+				t.Fatalf("expected creation failure, got %v", err)
+			}
+			if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("failed capture left a bundle directory: %v", err)
+			}
+			if _, err := Capture(context.Background(), src, CaptureOptions{BundleDir: dir}); err != nil {
+				t.Fatalf("retry after failed creation: %v", err)
+			}
+		})
 	}
 }
 

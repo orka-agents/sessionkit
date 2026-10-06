@@ -171,6 +171,9 @@ func (r *Root) RemoveDir(name string) error {
 	if !ValidPath(name) {
 		return fmt.Errorf("invalid directory path")
 	}
+	if path.Dir(name) == "." {
+		return unix.Unlinkat(int(r.dir.Fd()), name, unix.AT_REMOVEDIR)
+	}
 	d, err := r.openDir(path.Dir(name), false)
 	if err != nil {
 		return err
