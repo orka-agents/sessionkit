@@ -102,6 +102,18 @@ func TestInspectionPreservesNumbersAndSummarizesOwnedSettings(t *testing.T) {
 	}
 }
 
+func TestCustomThreadSourcesPreserveCase(t *testing.T) {
+	for _, source := range []string{"Guardian_Review", "Memory_Consolidation", "SUBAGENT"} {
+		t.Run(source, func(t *testing.T) {
+			metadata := meta()
+			metadata["thread_source"] = source
+			if _, err := inspect(t, line(t, 0, "session_meta", metadata)); err != nil {
+				t.Fatalf("custom feature source was classified as a reserved source: %v", err)
+			}
+		})
+	}
+}
+
 func TestProfileRejections(t *testing.T) {
 	cases := []struct {
 		name, code string

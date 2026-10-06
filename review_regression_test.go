@@ -403,6 +403,74 @@ func TestVerifiedRetryDetectsJournalReplacement(t *testing.T) {
 	}
 }
 
+func TestDestinationAndBundleMustNotOverlap(t *testing.T) {
+	for _, scope := range []string{"bundle", "components", "parent"} {
+		t.Run(scope, func(t *testing.T) {
+			_, bundle, _, _ := testBundle(t)
+			dst := testDestination(t)
+			plan, err := PlanInstall(context.Background(), bundle, dst)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch scope {
+			case "bundle":
+				dst.Root = bundle.Dir
+			case "components":
+				dst.Root = filepath.Join(bundle.Dir, "components")
+			case "parent":
+				dst.Root = filepath.Dir(bundle.Dir)
+			}
+			_, err = PlanInstall(context.Background(), bundle, dst)
+			var rejected *RejectionError
+			if !errors.As(err, &rejected) || rejected.Rejections[0].Code != "destination_path" {
+				t.Fatalf("planning accepted destination/bundle overlap: %v", err)
+			}
+			// Simulate a saved plan from before overlap validation was added.
+			plan.destination = dst
+			plan.ResumeHints.CodexHome = dst.Root
+			plan.seal = planSeal(plan)
+			receipt, err := Install(context.Background(), plan)
+			if receipt.Outcome != RejectedBeforeMutation || !errors.As(err, &rejected) {
+				t.Fatalf("installation accepted destination/bundle overlap: %+v %v", receipt, err)
+			}
+			if _, err := OpenBundle(context.Background(), bundle.Dir, Budget{}); err != nil {
+				t.Fatalf("overlap rejection mutated the bundle: %v", err)
+			}
+		})
+	}
+}
+
+func TestMovedJournalBeforeReadDoesNotBecomeFresh(t *testing.T) {
+	_, bundle, _, _ := testBundle(t)
+	dst := testDestination(t)
+	plan, err := PlanInstall(context.Background(), bundle, dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = Install(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+	moved := dst.JournalDir + "-moved"
+	t.Cleanup(func() { _ = os.RemoveAll(moved) })
+	receipt, err := install(context.Background(), plan, func(phase string) error {
+		if phase == "journal_opened" {
+			return os.Rename(dst.JournalDir, moved)
+		}
+		return nil
+	})
+	var unknown *UnknownOutcomeError
+	if receipt.Outcome != Unknown || !errors.As(err, &unknown) {
+		t.Fatalf("missing journal directory was mistaken for a fresh attempt: %+v %v", receipt, err)
+	}
+	if err := os.Rename(moved, dst.JournalDir); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err = Install(context.Background(), plan)
+	if err != nil || receipt.Outcome != Installed {
+		t.Fatalf("same-plan retry after restoring journal: %+v %v", receipt, err)
+	}
+}
+
 func TestJournalCannotMutateVerifiedBundle(t *testing.T) {
 	for _, inside := range []string{".", "components"} {
 		t.Run(inside, func(t *testing.T) {

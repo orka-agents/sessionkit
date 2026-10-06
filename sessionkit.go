@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"path"
 	"path/filepath"
 	"reflect"
@@ -435,6 +436,31 @@ func collision(root *fsx.Root, id, allowed string, b *budget.Tracker) error {
 	return nil
 }
 
+func validateBundleDestination(root *fsx.Root, bundleDir string) error {
+	bundle, err := fsx.OpenRoot(bundleDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil // Published recovery does not require the original bundle.
+	}
+	if err != nil {
+		return err
+	}
+	defer func() { _ = bundle.Close() }()
+	inside, err := bundle.Contains(root)
+	if err != nil {
+		return err
+	}
+	if !inside {
+		inside, err = root.Contains(bundle)
+		if err != nil {
+			return err
+		}
+	}
+	if inside {
+		return reject("destination_path", "destination home and bundle must not overlap")
+	}
+	return nil
+}
+
 func PlanInstall(ctx context.Context, bundle Bundle, dst Destination) (Plan, error) {
 	var empty Plan
 	b := budget.New(ctx, Budget{})
@@ -473,6 +499,9 @@ func PlanInstall(ctx context.Context, bundle Bundle, dst Destination) (Plan, err
 		return empty, err
 	}
 	defer func() { _ = root.Close() }()
+	if err = validateBundleDestination(root, checked.Dir); err != nil {
+		return empty, err
+	}
 	if err = collision(root, checked.Manifest.ThreadID, "", b); err != nil {
 		return empty, err
 	}

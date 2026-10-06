@@ -88,8 +88,9 @@ and the bundle's parent must already exist. Every path component is opened
 without following symlinks. Resolve a platform alias such as macOS `/tmp` before
 passing a caller-selected directory. Use caller-owned private roots; SessionKit
 creates files with mode 0600 and directories with mode 0700, and leaves existing
-directory modes alone. Inspection changes only lock coordination files, never
-the rollout. Verification also holds Codex's writer coordination and rejects an
+directory modes alone. The destination home and bundle must not overlap.
+Inspection changes only lock coordination files, never the rollout.
+Verification also holds Codex's writer coordination and rejects an
 active writer. Planning performs no writes.
 
 `OpenBundle` checks the manifest schema, rejects undeclared entries, re-inspects
@@ -185,9 +186,11 @@ does not raise installation limits; large bundles captured with custom limits
 can exceed installation's cumulative read budget. Configurable installation
 budgets are a separate API follow-up.
 
-Manifests and journals also have fixed 1 MiB and 16 KiB caps. A capture reads the
-rollout four times for source hashing, copying, source rechecking, and inspection;
-budget total reads accordingly. Duplicate keys, invalid Unicode, malformed JSON,
+Manifests and journals also have fixed 1 MiB and 16 KiB file-size caps. These
+limits bound files and I/O, not heap memory. Bounded manifest serialization is a
+separate follow-up. A capture reads the rollout four times for source hashing,
+copying, source rechecking, and inspection; budget total reads accordingly.
+Duplicate keys, invalid Unicode, malformed JSON,
 and a missing final newline are rejected. JSON numbers never pass through
 `float64` in the library.
 

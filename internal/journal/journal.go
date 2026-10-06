@@ -36,6 +36,9 @@ type Journal struct {
 	dir  string
 }
 
+// ErrNotFound identifies an absent entry under an identity-checked journal root.
+var ErrNotFound = errors.New("journal entry not found")
+
 func Open(ctx context.Context, dir, id string) (*Journal, error) {
 	return open(ctx, dir, id, "")
 }
@@ -124,6 +127,12 @@ func (j *Journal) Read(tracker *budget.Tracker) (State, error) {
 		return s, err
 	}
 	f, err := j.root.Open(j.id + ".json")
+	if errors.Is(err, os.ErrNotExist) {
+		if pathErr := j.CheckPath(); pathErr != nil {
+			return s, pathErr
+		}
+		return s, ErrNotFound
+	}
 	if err != nil {
 		return s, err
 	}

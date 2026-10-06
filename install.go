@@ -50,6 +50,9 @@ func install(ctx context.Context, p Plan, hook installHook) (Receipt, error) {
 		return unknown(operationError(b, err))
 	}
 	defer func() { _ = j.Close() }()
+	if err = hit("journal_opened"); err != nil {
+		return unknown(err)
+	}
 	if len(p.Preserved) != 1 {
 		return unknown(reject("plan", "invalid component inventory"))
 	}
@@ -57,7 +60,7 @@ func install(ctx context.Context, p Plan, hook installHook) (Receipt, error) {
 	expected := journal.State{OperationID: p.OperationID, ThreadID: p.ThreadID, TargetPath: p.TargetPath, BundleDigest: p.BundleDigest,
 		TargetDigest: receipt.TargetDigest, Destination: p.destination.Root, Phase: "planned", TempPath: path.Join(path.Dir(p.TargetPath), ".sessionkit-"+p.OperationID+".tmp")}
 	state, err := j.Read(b)
-	fresh := errors.Is(err, os.ErrNotExist)
+	fresh := errors.Is(err, journal.ErrNotFound)
 	if fresh {
 		state = expected
 	} else if err != nil {
@@ -86,6 +89,9 @@ func install(ctx context.Context, p Plan, hook installHook) (Receipt, error) {
 		return failBeforePublication(err)
 	}
 	defer func() { _ = root.Close() }()
+	if err = validateBundleDestination(root, p.bundleDir); err != nil {
+		return failBeforePublication(err)
+	}
 	if state.Phase == "published" || state.Phase == "verified" {
 		a, err := adapterFor(p.destination.Harness)
 		if err != nil {

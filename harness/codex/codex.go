@@ -631,7 +631,7 @@ func metadata(out *model.Inspection, payload map[string]any, component string, o
 		}
 	}
 	if source, ok := payload["thread_source"].(string); ok {
-		switch strings.ToLower(source) {
+		switch source {
 		case "subagent":
 			return bad("subagent", "subagent sessions are not supported")
 		case "guardian_review", "memory_consolidation":
