@@ -302,7 +302,7 @@ func walk(d *os.File, prefix string, visit func(string, bool) error) error {
 				return err
 			}
 			if mode == unix.S_IFLNK {
-				return fmt.Errorf("symlink in session tree")
+				return fmt.Errorf("symlink in session tree: %s", name)
 			}
 			if mode == unix.S_IFDIR {
 				fd, e := unix.Openat(int(d.Fd()), entry, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
@@ -316,7 +316,7 @@ func walk(d *os.File, prefix string, visit func(string, bool) error) error {
 					return e
 				}
 			} else if mode != unix.S_IFREG {
-				return fmt.Errorf("special file in session tree")
+				return fmt.Errorf("special file in session tree: %s", name)
 			}
 		}
 		if err != nil {

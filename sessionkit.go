@@ -139,7 +139,9 @@ func capture(ctx context.Context, src Source, o CaptureOptions, hook func(string
 	if err != nil {
 		return empty, operationError(b, err)
 	}
-	before, size, err := digestFile(root, rel, b)
+	// The copy digest and the post-copy digest together prove the bundle equals
+	// the final source bytes; a separate pre-copy digest would only add a read.
+	size, err := fileSize(root, rel)
 	if err != nil {
 		return empty, err
 	}
@@ -212,7 +214,7 @@ func capture(ctx context.Context, src Source, o CaptureOptions, hook func(string
 	if err != nil {
 		return empty, err
 	}
-	if before != copied || before != after || size != n || size != afterSize {
+	if copied != after || size != n || size != afterSize {
 		return empty, &IntegrityError{Component: "rollout", Reason: "source changed during capture"}
 	}
 	if err = root.CheckPath(src.Root); err != nil {
@@ -356,6 +358,21 @@ func digestFile(root *fsx.Root, rel string, b *budget.Tracker) (string, int64, e
 	defer func() { _ = f.Close() }()
 	return copyDigest(io.Discard, f, b)
 }
+func fileSize(root *fsx.Root, rel string) (int64, error) {
+	f, err := root.Open(rel)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	if !info.Mode().IsRegular() {
+		return 0, &IntegrityError{Component: "rollout", Reason: "source is not a regular file"}
+	}
+	return info.Size(), nil
+}
 func copyDigest(dst io.Writer, src io.Reader, b *budget.Tracker) (string, int64, error) {
 	h := sha256.New()
 	out := io.MultiWriter(dst, h)
@@ -400,8 +417,8 @@ func validateDestination(dst Destination) error {
 	if _, err := adapterFor(dst.Harness); err != nil {
 		return err
 	}
-	if dst.CLIVersion != "0.160.0" {
-		return reject("cli_version", "destination CLI version must be the supported 0.160.0")
+	if dst.CLIVersion != codex.CLIVersion {
+		return reject("cli_version", "destination CLI version must be the supported "+codex.CLIVersion)
 	}
 	workspace, err := fsx.OpenRoot(dst.WorkingDir)
 	if err != nil {

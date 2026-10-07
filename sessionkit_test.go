@@ -266,7 +266,7 @@ func TestBundleRejectsUndeclaredEntries(t *testing.T) {
 
 func TestCaptureBudgetsAndExistingBundle(t *testing.T) {
 	src, _, raw := testSource(t)
-	for _, limit := range []Budget{{MaxBytes: int64(len(raw)) * 3}, {MaxTempBytes: int64(len(raw)) - 1}, {MaxBytes: -1}, {Timeout: time.Nanosecond}} {
+	for _, limit := range []Budget{{MaxBytes: int64(len(raw)) * 2}, {MaxTempBytes: int64(len(raw)) - 1}, {MaxBytes: -1}, {Timeout: time.Nanosecond}} {
 		_, err := Capture(context.Background(), src, CaptureOptions{BundleDir: filepath.Join(tempDir(t), "bundle"), Budget: limit})
 		var exceeded *BudgetError
 		if !errors.As(err, &exceeded) {

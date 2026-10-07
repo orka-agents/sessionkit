@@ -163,12 +163,9 @@ func (j *Journal) Read(tracker *budget.Tracker) (State, error) {
 	}
 	d := json.NewDecoder(bytes.NewReader(data))
 	d.DisallowUnknownFields()
+	// jsonl.Decode already rejected trailing content, so one object remains.
 	if err = d.Decode(&s); err != nil {
 		return s, &model.IntegrityError{Component: "journal", Reason: "invalid schema"}
-	}
-	var extra any
-	if err = d.Decode(&extra); err != io.EOF {
-		return s, fmt.Errorf("invalid journal tail")
 	}
 	return s, nil
 }

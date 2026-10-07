@@ -191,9 +191,11 @@ func TestInstallFaultReconciliation(t *testing.T) {
 			if !errors.As(err, &unknown) || receipt.Outcome != Unknown {
 				t.Fatalf("fault: %+v %v", receipt, err)
 			}
-			expectedPhase := "staged"
-			if fault == "verify" {
-				expectedPhase = "published"
+			// Publication is recorded before the staged witness is removed, so
+			// only faults before the journal write leave the operation staged.
+			expectedPhase := "published"
+			if fault == "link" || fault == "dir_fsync" {
+				expectedPhase = "staged"
 			}
 			if receipt.Phase != expectedPhase {
 				t.Fatalf("phase %s != %s", receipt.Phase, expectedPhase)
@@ -208,12 +210,6 @@ func TestInstallFaultReconciliation(t *testing.T) {
 				t.Fatalf("journal: %+v", journal)
 			}
 			retry, err := Install(context.Background(), plan)
-			if fault == "after_temp_remove" {
-				if !errors.As(err, &unknown) || retry.Outcome != Unknown {
-					t.Fatalf("missing witness: %+v %v", retry, err)
-				}
-				return
-			}
 			if err != nil || retry.Outcome != Installed {
 				t.Fatalf("retry: %+v %v", retry, err)
 			}

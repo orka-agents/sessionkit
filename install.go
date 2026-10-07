@@ -54,8 +54,10 @@ func install(ctx context.Context, p Plan, hook installHook) (Receipt, error) {
 	if err = hit("journal_opened"); err != nil {
 		return unknown(err)
 	}
+	// A sealed plan with this shape fails here on every attempt, so nothing in
+	// the destination can have been published.
 	if len(p.Preserved) != 1 {
-		return unknown(reject("plan", "invalid component inventory"))
+		return receipt, reject("plan", "invalid component inventory")
 	}
 	receipt.TargetDigest = p.Preserved[0].SHA256
 	expected := journal.State{OperationID: p.OperationID, ThreadID: p.ThreadID, TargetPath: p.TargetPath, BundleDigest: p.BundleDigest,
@@ -115,17 +117,14 @@ func install(ctx context.Context, p Plan, hook installHook) (Receipt, error) {
 	if checked.Manifest.ThreadID != p.ThreadID || checked.Manifest.Profile != p.Profile || checked.Manifest.SourceRelativePath != p.TargetPath || checked.Manifest.Components[0] != p.Preserved[0] {
 		return failBeforePublication(&IntegrityError{Component: "plan", Reason: "plan does not match verified bundle"})
 	}
-	if fresh {
-		if err = collision(root, p.ThreadID, "", b); err != nil {
-			return receipt, err
-		}
-		if err = j.Write(state, b); err != nil {
-			return receipt, err
-		}
-	}
 	if state.Phase == "planned" {
 		if err = collision(root, p.ThreadID, "", b); err != nil {
 			return receipt, err
+		}
+		if fresh {
+			if err = j.Write(state, b); err != nil {
+				return receipt, err
+			}
 		}
 		if err = root.MkdirAll(path.Dir(p.TargetPath)); err != nil {
 			return receipt, err
@@ -198,8 +197,10 @@ func install(ctx context.Context, p Plan, hook installHook) (Receipt, error) {
 		if hookErr := hit("cleanup_journal"); hookErr != nil {
 			return unknown(hookErr)
 		}
+		// A slow cleanup keeps the staged file for the planned retry to reclaim
+		// and reports its budget alongside the blocker, never instead of it.
 		if cleanupErr := cleanup.Check(); cleanupErr != nil {
-			return receipt, cleanupErr
+			return receipt, errors.Join(err, cleanupErr)
 		}
 		_ = root.Remove(state.TempPath)
 		return receipt, err
@@ -274,25 +275,47 @@ func install(ctx context.Context, p Plan, hook installHook) (Receipt, error) {
 	if err = root.SyncDir(path.Dir(p.TargetPath)); err != nil {
 		return unknown(err)
 	}
-	if err = hit("temp_remove"); err != nil {
-		return unknown(err)
-	}
-	if err = root.Remove(state.TempPath); err != nil {
-		return unknown(err)
-	}
-	if err = hit("after_temp_remove"); err != nil {
-		return unknown(err)
-	}
-	// Persist removal as well as publication before acknowledging this phase.
-	if err = root.SyncDir(path.Dir(p.TargetPath)); err != nil {
-		return unknown(err)
-	}
+	// Record publication while the staged link still witnesses it. From here
+	// every retry can prove the outcome from the journal and target digest.
 	state.Phase = "published"
 	if err = j.Write(state, b); err != nil {
 		return unknown(err)
 	}
 	receipt.Phase = "published"
 	return finishInstall(ctx, p, receipt, state, j, root, b, hit)
+}
+
+// removeStagedWitness drops the private staging link once publication is
+// recorded. It tolerates the interrupted retry that already removed it.
+func removeStagedWitness(p Plan, state journal.State, root *fsx.Root) error {
+	temp, err := root.Open(state.TempPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	tempInfo, err := temp.Stat()
+	_ = temp.Close()
+	if err != nil {
+		return err
+	}
+	target, err := root.Open(p.TargetPath)
+	if err != nil {
+		return err
+	}
+	targetInfo, err := target.Stat()
+	_ = target.Close()
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(targetInfo, tempInfo) {
+		return &IntegrityError{Component: "staged rollout", Reason: "publication witness does not match target"}
+	}
+	if err = root.Remove(state.TempPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return root.SyncDir(path.Dir(p.TargetPath))
 }
 
 func finishInstall(ctx context.Context, p Plan, receipt Receipt, state journal.State, j *journal.Journal, root *fsx.Root, b *budget.Tracker, hit installHook) (Receipt, error) {
@@ -302,6 +325,15 @@ func finishInstall(ctx context.Context, p Plan, receipt Receipt, state journal.S
 	}
 	if err := ctx.Err(); err != nil {
 		return fail(operationError(b, err))
+	}
+	if err := hit("temp_remove"); err != nil {
+		return fail(err)
+	}
+	if err := removeStagedWitness(p, state, root); err != nil {
+		return fail(err)
+	}
+	if err := hit("after_temp_remove"); err != nil {
+		return fail(err)
 	}
 	if err := collision(root, p.ThreadID, p.TargetPath, b); err != nil {
 		return fail(err)

@@ -158,9 +158,9 @@ means publication may have happened. Preserve the plan, bundle, journal, and
 staging evidence and retry the same plan. Concurrent uses of that plan serialize.
 
 A staged retry can prove publication when target and staged file are the same
-inode. If execution stopped after removing that evidence but before recording
-`published`, it returns a clear `Unknown` instead of guessing. Once `published`
-or `verified` is recorded, retries can verify the target without the bundle.
+inode. `published` is recorded before that staged witness is removed, so a
+retry after any later interruption removes the leftover witness and verifies
+the target without the bundle.
 `Verify` compares a completed receipt to installed bytes without starting Codex.
 After a native turn appends new data, that earlier digest is expected to differ;
 capture a new bundle for the next handoff.
