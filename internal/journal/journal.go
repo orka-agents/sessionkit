@@ -1,0 +1,200 @@
+// Package journal records installation progress. An operation lock serializes
+// retries; each phase replaces the receipt atomically and is written only once.
+package journal
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"time"
+
+	"github.com/orka-agents/sessionkit/internal/budget"
+	"github.com/orka-agents/sessionkit/internal/fsx"
+	"github.com/orka-agents/sessionkit/internal/jsonl"
+	"github.com/orka-agents/sessionkit/internal/model"
+	"golang.org/x/sys/unix"
+)
+
+const maxBytes = 16 << 10
+
+type State struct {
+	OperationID  string `json:"operationID"`
+	ThreadID     string `json:"threadID"`
+	TargetPath   string `json:"targetPath"`
+	BundleDigest string `json:"bundleDigest"`
+	TargetDigest string `json:"targetDigest"`
+	Destination  string `json:"destination"`
+	Phase        string `json:"phase"`
+	TempPath     string `json:"tempPath,omitempty"`
+}
+type Journal struct {
+	root *fsx.Root
+	lock *os.File
+	id   string
+	dir  string
+}
+
+// ErrNotFound identifies an absent entry under an identity-checked journal root.
+var ErrNotFound = errors.New("journal entry not found")
+
+func Open(ctx context.Context, dir, id string) (*Journal, error) {
+	return open(ctx, dir, id, "")
+}
+
+// OpenOutside rejects a journal inside the protected bundle before creating its lock.
+func OpenOutside(ctx context.Context, dir, id, bundleDir string) (*Journal, error) {
+	return open(ctx, dir, id, bundleDir)
+}
+
+func open(ctx context.Context, dir, id, bundleDir string) (*Journal, error) {
+	if len(id) != 32 {
+		return nil, fmt.Errorf("invalid operation ID")
+	}
+	for _, c := range id {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return nil, fmt.Errorf("invalid operation ID")
+		}
+	}
+	r, err := fsx.OpenRoot(dir)
+	if err != nil {
+		return nil, err
+	}
+	if bundleDir != "" {
+		if err := CheckOutside(r, bundleDir); err != nil {
+			_ = r.Close()
+			return nil, err
+		}
+	}
+	f, err := r.LockFile(id + ".lock")
+	if err != nil {
+		_ = r.Close()
+		return nil, err
+	}
+	for {
+		err = unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+		if err == nil {
+			return &Journal{r, f, id, dir}, nil
+		}
+		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EINTR) {
+			_ = f.Close()
+			_ = r.Close()
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			_ = f.Close()
+			_ = r.Close()
+			return nil, ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+// CheckOutside compares directory ancestry through the retained journal root.
+func CheckOutside(root *fsx.Root, bundleDir string) error {
+	bundle, err := fsx.OpenRoot(bundleDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil // A missing bundle cannot contain this journal during recovery.
+	}
+	if err != nil {
+		return err
+	}
+	defer func() { _ = bundle.Close() }()
+	inside, err := bundle.Contains(root)
+	if err != nil {
+		return err
+	}
+	if inside {
+		return &model.RejectionError{Rejections: []model.Rejection{{Code: "journal_path", Message: "journal directory must be outside the bundle"}}}
+	}
+	return nil
+}
+
+func (j *Journal) Close() error {
+	e := j.lock.Close()
+	other := j.root.Close()
+	if e != nil {
+		return e
+	}
+	return other
+}
+func (j *Journal) CheckPath() error { return j.root.CheckPath(j.dir) }
+func (j *Journal) Read(tracker *budget.Tracker) (State, error) {
+	var s State
+	if err := j.root.CheckPath(j.dir); err != nil {
+		return s, err
+	}
+	f, err := j.root.Open(j.id + ".json")
+	if errors.Is(err, os.ErrNotExist) {
+		if pathErr := j.CheckPath(); pathErr != nil {
+			return s, pathErr
+		}
+		return s, ErrNotFound
+	}
+	if err != nil {
+		return s, err
+	}
+	defer func() { _ = f.Close() }()
+	if err = tracker.Check(); err != nil {
+		return s, err
+	}
+	readLimit := int64(maxBytes + 1)
+	if remaining := tracker.RemainingBytes(); remaining < readLimit {
+		readLimit = max(1, remaining+1)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, readLimit))
+	if err != nil {
+		return s, err
+	}
+	if err = tracker.Bytes(int64(len(data))); err != nil {
+		return s, err
+	}
+	if len(data) > maxBytes {
+		return s, &model.BudgetError{Limit: "journal bytes"}
+	}
+	object, err := jsonl.Decode(data, tracker)
+	if err != nil {
+		return s, err
+	}
+	if err = jsonl.CheckFields(object, s, "journal", tracker); err != nil {
+		return s, err
+	}
+	d := json.NewDecoder(bytes.NewReader(data))
+	d.DisallowUnknownFields()
+	// jsonl.Decode already rejected trailing content, so one object remains.
+	if err = d.Decode(&s); err != nil {
+		return s, &model.IntegrityError{Component: "journal", Reason: "invalid schema"}
+	}
+	return s, nil
+}
+func (j *Journal) Write(s State, tracker *budget.Tracker) error {
+	if err := j.root.CheckPath(j.dir); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		return err
+	}
+	// Identity and path fields are immutable during installation. Reserve the
+	// longest phase now so a readable planned entry can still record publication.
+	published := s
+	published.Phase = "published"
+	publishedData, err := json.MarshalIndent(published, "", "  ")
+	if err != nil {
+		return err
+	}
+	if max(len(data), len(publishedData))+1 > maxBytes {
+		return &model.BudgetError{Limit: "journal bytes"}
+	}
+	if err = tracker.Temp(int64(len(data) + 1)); err != nil {
+		return err
+	}
+	if err = j.root.WriteAtomic(j.id+".json", append(data, '\n')); err != nil {
+		return err
+	}
+	return j.root.CheckPath(j.dir)
+}
