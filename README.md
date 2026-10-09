@@ -113,8 +113,9 @@ creation requires a separate coordination and publication contract.
 `Bundle.Manifest` is a verification snapshot. `PlanInstall` revalidates the files
 and `Install` checks the resulting plan's frozen digest before publication.
 Concurrent edits to bundle files require caller-owned coordination.
-Use the pinned client to produce native payloads. Hand-edited nested payloads
-require separate native schema validation.
+Use the pinned client to produce native payloads. Rollout, response-item, and
+event type tags are checked against the pinned profile. Hand-edited nested
+payloads require separate native schema validation.
 
 `PlanInstall` freezes the verified manifest digest and original relative path.
 It does not recompute date directories from timestamps, because Codex's directory
@@ -203,9 +204,9 @@ and a missing final newline are rejected. JSON numbers never pass through
 
 There is no automatic redaction. Conversations and tool outputs can contain
 secrets even though authentication files are excluded. Inspection warns about
-repository URL userinfo, encrypted content, and workspace roots outside the
-recorded cwd. Encrypted reasoning or compaction data may be provider-bound.
-Byte preservation does not prove that another provider will accept it.
+repository URL userinfo and workspace roots outside the recorded cwd. Non-null
+`encrypted_content` is rejected until pinned native tests establish a safe reload
+contract. Byte preservation does not prove that another provider will accept it.
 
 Run the ordinary checks without a native client:
 

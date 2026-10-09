@@ -227,18 +227,24 @@ func install(ctx context.Context, p Plan, hook installHook) (Receipt, error) {
 	target, targetErr := root.Open(p.TargetPath)
 	if targetErr == nil {
 		targetInfo, e := target.Stat()
+		if e == nil {
+			e = hit("target_stat")
+		}
 		_ = target.Close()
 		if e != nil {
-			return unknown(e)
+			return rejectUnpublished(e)
 		}
 		temp, e := root.Open(state.TempPath)
 		if e != nil {
-			return unknown(fmt.Errorf("staged target exists without its publication witness: %w", e))
+			return rejectUnpublished(fmt.Errorf("staged target exists without its publication witness: %w", e))
 		}
 		tempInfo, e := temp.Stat()
+		if e == nil {
+			e = hit("witness_stat")
+		}
 		_ = temp.Close()
 		if e != nil {
-			return unknown(e)
+			return rejectUnpublished(e)
 		}
 		if !os.SameFile(targetInfo, tempInfo) {
 			return rejectUnpublished(&CollisionError{ThreadID: p.ThreadID, TargetPath: p.TargetPath})

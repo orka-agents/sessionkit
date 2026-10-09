@@ -386,12 +386,17 @@ func assertContains(t *testing.T, v any, s string) {
 
 // Keep a fixture checksum assertion independent of the bundle implementation.
 func TestFixtureBytes(t *testing.T) {
-	for _, name := range []string{"basic", "compacted"} {
+	for name, expected := range map[string]string{
+		"basic":     "3a56421c8af31a3c003bed3f8d10fce30f8df95b3f9b63288b9602fe74b00c4d",
+		"compacted": "f567be1bfe2bf86b50d5a360c266a86f0a6f37fb848ae8cb15bc5433d4750925",
+	} {
 		p := findRollout(t, filepath.Join("..", "..", "harness", "codex", "testdata", name))
 		b := read(t, p)
 		if !bytes.HasSuffix(b, []byte{'\n'}) {
 			t.Fatal("fixture has incomplete final line")
 		}
-		t.Logf("%s sha256=%x", name, sha256.Sum256(b))
+		if got := fmt.Sprintf("%x", sha256.Sum256(b)); got != expected {
+			t.Fatalf("%s fixture digest differs from documented provenance: got %s, want %s", name, got, expected)
+		}
 	}
 }

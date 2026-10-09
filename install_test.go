@@ -762,3 +762,93 @@ func TestVerifiedRetryWithoutBundleDirectory(t *testing.T) {
 		t.Fatalf("verified recovery must not require the original bundle directory: %+v %v", receipt, err)
 	}
 }
+
+func TestPreLinkInspectionFailureRetainsRetryState(t *testing.T) {
+	for _, initialPhase := range []string{"fresh", "planned", "staged"} {
+		for _, fault := range []string{"target_stat", "witness_open", "witness_stat"} {
+			t.Run(initialPhase+"/"+fault, func(t *testing.T) {
+				_, bundle, rel, raw := testBundle(t)
+				dst := testDestination(t)
+				plan, err := PlanInstall(context.Background(), bundle, dst)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if initialPhase != "fresh" {
+					_, err := install(context.Background(), plan, func(phase string) error {
+						if initialPhase == "staged" && phase == "staged" || initialPhase == "planned" && phase == "target_open" {
+							return errors.New("interrupted before publication")
+						}
+						return nil
+					})
+					if err == nil {
+						t.Fatal("preparation did not interrupt")
+					}
+				}
+				target := filepath.Join(dst.Root, rel)
+				witness := filepath.Join(filepath.Dir(target), ".sessionkit-"+plan.OperationID+".tmp")
+				injected := false
+				receipt, err := install(context.Background(), plan, func(phase string) error {
+					if phase == "target_open" {
+						// A competing file arrives after the collision scan.
+						if err := os.WriteFile(target, raw, 0600); err != nil {
+							t.Fatal(err)
+						}
+						if fault == "witness_open" {
+							injected = true
+							if err := os.Remove(witness); err != nil {
+								t.Fatal(err)
+							}
+						}
+					}
+					if phase == fault {
+						injected = true
+						return errors.New("inspection failed")
+					}
+					return nil
+				})
+				if !injected || err == nil {
+					t.Fatalf("inspection failure not exercised: %+v %v", receipt, err)
+				}
+				expectedPhase := "planned"
+				if initialPhase == "staged" {
+					expectedPhase = "staged"
+					var unknown *UnknownOutcomeError
+					if receipt.Outcome != Unknown || !errors.As(err, &unknown) {
+						t.Fatalf("staged retry lost uncertainty: %+v %v", receipt, err)
+					}
+					if fault != "witness_open" {
+						if _, err := os.Stat(witness); err != nil {
+							t.Fatalf("staged retry removed its witness: %v", err)
+						}
+					}
+				} else {
+					if receipt.Outcome != RejectedBeforeMutation {
+						t.Fatalf("unpublished attempt did not reject: %+v %v", receipt, err)
+					}
+					if _, err := os.Stat(witness); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("unpublished attempt retained its witness: %v", err)
+					}
+				}
+				var state journal.State
+				if err := json.Unmarshal(mustRead(t, filepath.Join(dst.JournalDir, plan.OperationID+".json")), &state); err != nil {
+					t.Fatal(err)
+				}
+				if receipt.Phase != expectedPhase || state.Phase != expectedPhase {
+					t.Fatalf("receipt/journal must remain %s: %+v %+v", expectedPhase, receipt, state)
+				}
+				if !bytes.Equal(raw, mustRead(t, target)) {
+					t.Fatal("inspection failure changed the competing target")
+				}
+				if initialPhase != "staged" {
+					if err := os.Remove(target); err != nil {
+						t.Fatal(err)
+					}
+					receipt, err = Install(context.Background(), plan)
+					if err != nil || receipt.Outcome != Installed || !bytes.Equal(raw, mustRead(t, target)) {
+						t.Fatalf("same-plan retry failed: %+v %v", receipt, err)
+					}
+				}
+			})
+		}
+	}
+}

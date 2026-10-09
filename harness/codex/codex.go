@@ -332,6 +332,9 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 			if eventKind == "sub_agent_activity" || strings.HasPrefix(eventKind, "collab_") {
 				return fail(reject(relative, "subagent", "subagent activity is not supported", ordinal))
 			}
+			if !supportedEventKind(eventKind) {
+				return fail(reject(relative, "event_msg", "event type is not supported by the pinned native profile", ordinal))
+			}
 			switch payload["type"] {
 			case "item_started", "item_completed":
 				item, _ := payload["item"].(map[string]any)
@@ -399,7 +402,7 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 				}
 			}
 		}
-		if err := walkWarnings(record, ordinal, warn, tracker); err != nil {
+		if err := walkWarnings(record, relative, ordinal, warn, tracker); err != nil {
 			return fail(err)
 		}
 		if rootsChanged && !warned["workspace_root_outside_cwd"] {
@@ -630,6 +633,44 @@ func toolOutput(value any, tracker *budget.Tracker) (bool, error) {
 	return true, nil
 }
 
+// supportedEventKind checks only the enum tag, not each variant's nested schema.
+// Pinned to Codex a956835d020762cb2b570053af06f643a11c0ecc,
+// codex-rs/protocol/src/protocol.rs EventMsg, including serde aliases.
+// Collaboration and subagent events are rejected separately.
+func supportedEventKind(kind string) bool {
+	switch kind {
+	case
+		"error", "warning", "auth_recovery_started",
+		"auth_recovery_completed", "guardian_warning", "realtime_conversation_started",
+		"realtime_conversation_realtime", "realtime_conversation_closed", "realtime_conversation_sdp",
+		"model_reroute", "model_verification", "turn_moderation_metadata",
+		"safety_buffering", "context_compacted", "thread_rolled_back",
+		"task_started", "turn_started", "thread_settings_applied",
+		"task_complete", "turn_complete", "token_count",
+		"agent_message", "user_message", "agent_reasoning",
+		"agent_reasoning_raw_content", "agent_reasoning_section_break", "session_configured",
+		"environment_connected", "environment_disconnected", "thread_goal_updated",
+		"thread_queue_changed", "mcp_startup_update", "mcp_startup_complete",
+		"mcp_tool_call_begin", "mcp_tool_call_end", "web_search_begin",
+		"web_search_end", "image_generation_begin", "image_generation_end",
+		"exec_command_begin", "exec_command_output_delta", "terminal_interaction",
+		"exec_command_end", "view_image_tool_call", "exec_approval_request",
+		"request_permissions", "request_user_input", "dynamic_tool_call_request",
+		"dynamic_tool_call_response", "elicitation_request", "apply_patch_approval_request",
+		"guardian_assessment", "deprecation_notice", "stream_error",
+		"patch_apply_begin", "patch_apply_updated", "patch_apply_end",
+		"turn_diff", "realtime_conversation_list_voices_response", "plan_update",
+		"turn_aborted", "shutdown_complete", "entered_review_mode",
+		"exited_review_mode", "raw_response_item", "raw_response_completed",
+		"item_started", "item_completed", "hook_started",
+		"hook_completed", "agent_message_content_delta", "plan_delta",
+		"reasoning_content_delta", "reasoning_raw_content_delta":
+		return true
+	default:
+		return false
+	}
+}
+
 func parseError(component string, err error) error {
 	var malformed *jsonl.Error
 	if errors.As(err, &malformed) {
@@ -759,7 +800,7 @@ func under(cwd, root string) bool {
 	relative, err := filepath.Rel(cwd, root)
 	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
-func walkWarnings(value any, ordinal uint64, warn func(string, string, uint64), tracker *budget.Tracker) error {
+func walkWarnings(value any, component string, ordinal uint64, warn func(string, string, uint64), tracker *budget.Tracker) error {
 	if err := tracker.Check(); err != nil {
 		return err
 	}
@@ -767,7 +808,7 @@ func walkWarnings(value any, ordinal uint64, warn func(string, string, uint64), 
 	case map[string]any:
 		for key, child := range value {
 			if key == "encrypted_content" && child != nil {
-				warn("encrypted_content", "encrypted content may be bound to its original provider", ordinal)
+				return reject(component, "encrypted_content", "encrypted content has no supported native reload contract", ordinal)
 			}
 			if key == "repository_url" {
 				if raw, ok := child.(string); ok {
@@ -776,13 +817,13 @@ func walkWarnings(value any, ordinal uint64, warn func(string, string, uint64), 
 					}
 				}
 			}
-			if err := walkWarnings(child, ordinal, warn, tracker); err != nil {
+			if err := walkWarnings(child, component, ordinal, warn, tracker); err != nil {
 				return err
 			}
 		}
 	case []any:
 		for _, child := range value {
-			if err := walkWarnings(child, ordinal, warn, tracker); err != nil {
+			if err := walkWarnings(child, component, ordinal, warn, tracker); err != nil {
 				return err
 			}
 		}

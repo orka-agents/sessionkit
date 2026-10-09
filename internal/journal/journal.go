@@ -19,6 +19,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const maxBytes = 16 << 10
+
 type State struct {
 	OperationID  string `json:"operationID"`
 	ThreadID     string `json:"threadID"`
@@ -140,7 +142,7 @@ func (j *Journal) Read(tracker *budget.Tracker) (State, error) {
 	if err = tracker.Check(); err != nil {
 		return s, err
 	}
-	readLimit := int64(16385)
+	readLimit := int64(maxBytes + 1)
 	if remaining := tracker.RemainingBytes(); remaining < readLimit {
 		readLimit = max(1, remaining+1)
 	}
@@ -151,7 +153,7 @@ func (j *Journal) Read(tracker *budget.Tracker) (State, error) {
 	if err = tracker.Bytes(int64(len(data))); err != nil {
 		return s, err
 	}
-	if len(data) > 16384 {
+	if len(data) > maxBytes {
 		return s, &model.BudgetError{Limit: "journal bytes"}
 	}
 	object, err := jsonl.Decode(data, tracker)
@@ -176,6 +178,17 @@ func (j *Journal) Write(s State, tracker *budget.Tracker) error {
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
+	}
+	// Identity and path fields are immutable during installation. Reserve the
+	// longest phase now so a readable planned entry can still record publication.
+	published := s
+	published.Phase = "published"
+	publishedData, err := json.MarshalIndent(published, "", "  ")
+	if err != nil {
+		return err
+	}
+	if max(len(data), len(publishedData))+1 > maxBytes {
+		return &model.BudgetError{Limit: "journal bytes"}
 	}
 	if err = tracker.Temp(int64(len(data) + 1)); err != nil {
 		return err

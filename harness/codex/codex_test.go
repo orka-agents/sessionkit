@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -43,10 +44,11 @@ func TestWarningTraversalStopsWhenCanceled(t *testing.T) {
 	defer cancel()
 	tracker := budget.New(ctx, model.Budget{})
 	warnings := 0
+	repository := (&url.URL{Scheme: "https", User: url.UserPassword("user", "test"), Host: "example.test"}).String()
 	err := walkWarnings([]any{
-		map[string]any{"encrypted_content": "first"},
-		map[string]any{"encrypted_content": "second"},
-	}, 1, func(string, string, uint64) {
+		map[string]any{"repository_url": repository},
+		map[string]any{"repository_url": repository},
+	}, testPath, 1, func(string, string, uint64) {
 		warnings++
 		cancel()
 	}, tracker)
@@ -333,6 +335,9 @@ func TestCustomToolsCompactionAndWarnings(t *testing.T) {
 	metadata["runtime_workspace_roots"] = []string{"/outside"}
 	data := line(t, 0, "session_meta", metadata) + line(t, 1, "response_item", map[string]any{"type": "custom_tool_call", "call_id": "custom", "name": "test", "input": "data"}) + line(t, 2, "response_item", map[string]any{"type": "custom_tool_call_output", "call_id": "custom", "output": "done"}) +
 		line(t, 3, "compacted", map[string]any{"message": "summary", "replacement_history": []any{}, "window_number": 1, "encrypted_content": "secret"})
+	_, err := inspect(t, data)
+	assertRejection(t, err, "encrypted_content")
+	data = strings.Replace(data, `"encrypted_content":"secret"`, `"encrypted_content":null`, 1)
 	got, err := inspect(t, data)
 	if err != nil {
 		t.Fatal(err)
@@ -347,7 +352,7 @@ func TestCustomToolsCompactionAndWarnings(t *testing.T) {
 			t.Fatal("warning exposed secret")
 		}
 	}
-	for _, code := range []string{"repository_url_userinfo", "encrypted_content", "workspace_root_outside_cwd"} {
+	for _, code := range []string{"repository_url_userinfo", "workspace_root_outside_cwd"} {
 		if !warnings[code] {
 			t.Fatalf("missing %s", code)
 		}
@@ -734,5 +739,60 @@ func TestContentReferencesMustBeInline(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+func TestEventKindTags(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		kind any
+	}{
+		{"missing", nil}, {"null", nil}, {"empty", ""}, {"number", 1}, {"object", map[string]any{}}, {"future", "future_event"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := map[string]any{}
+			if tc.name != "missing" {
+				payload["type"] = tc.kind
+			}
+			got, err := inspect(t, line(t, 0, "session_meta", meta())+line(t, 1, "event_msg", payload))
+			assertRejection(t, err, "event_msg")
+			if got.Rejections[0].Ordinal != 1 {
+				t.Fatal("event rejection lost its ordinal")
+			}
+		})
+	}
+	for _, kind := range []string{"warning", "auth_recovery_started", "shutdown_complete", "raw_response_completed", "hook_completed"} {
+		t.Run(kind, func(t *testing.T) {
+			_, err := inspect(t, line(t, 0, "session_meta", meta())+line(t, 1, "event_msg", map[string]any{"type": kind}))
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestEncryptedContentRejects(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		kind    string
+		payload map[string]any
+	}{
+		{"reasoning", "response_item", map[string]any{"type": "reasoning", "encrypted_content": "opaque"}},
+		{"empty", "response_item", map[string]any{"type": "reasoning", "encrypted_content": ""}},
+		{"compaction", "compacted", map[string]any{"message": "summary", "replacement_history": []any{}, "window_number": 1, "encrypted_content": "opaque"}},
+		{"replacement history", "compacted", map[string]any{"message": "summary", "replacement_history": []any{map[string]any{"type": "reasoning", "encrypted_content": "opaque"}}, "window_number": 1}},
+		{"nested content", "response_item", map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "input_text", "text": "message", "encrypted_content": "opaque"}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := inspect(t, line(t, 0, "session_meta", meta())+line(t, 1, tc.kind, tc.payload))
+			assertRejection(t, err, "encrypted_content")
+			if got.Rejections[0].Ordinal != 1 || strings.Contains(err.Error(), "opaque") {
+				t.Fatal("encrypted-content rejection lost its ordinal or exposed content")
+			}
+		})
+	}
+	_, err := inspect(t, line(t, 0, "session_meta", meta())+line(t, 1, "response_item", map[string]any{"type": "reasoning", "encrypted_content": nil}))
+	if err != nil {
+		t.Fatalf("null optional encrypted content rejected: %v", err)
 	}
 }
