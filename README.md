@@ -196,8 +196,8 @@ budgets are a separate API follow-up.
 
 Manifests and journals also have fixed 1 MiB and 16 KiB file-size caps. These
 limits bound files and I/O, not heap memory. Bounded manifest serialization is a
-separate follow-up. A capture reads the rollout four times for source hashing,
-copying, source rechecking, and inspection; budget total reads accordingly.
+separate follow-up. A capture reads the rollout three times: hashing while
+copying, source rechecking, and inspection. Budget total reads accordingly.
 Duplicate keys, invalid Unicode, malformed JSON,
 and a missing final newline are rejected. JSON numbers never pass through
 `float64` in the library.
