@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -114,14 +115,15 @@ func runExec(t *testing.T, home, cwd, id, prompt string) {
 }
 
 type appClient struct {
-	t      *testing.T
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	lines  chan map[string]any
-	stderr bytes.Buffer
-	nextID int
-	cancel context.CancelFunc
-	closed bool
+	t       *testing.T
+	cmd     *exec.Cmd
+	stdin   io.WriteCloser
+	lines   chan map[string]any
+	pending []map[string]any
+	stderr  bytes.Buffer
+	nextID  int
+	cancel  context.CancelFunc
+	closed  bool
 }
 
 func newApp(t *testing.T, home, cwd string) *appClient {
@@ -165,6 +167,16 @@ func (a *appClient) send(msg map[string]any) {
 
 func (a *appClient) next() map[string]any {
 	a.t.Helper()
+	if len(a.pending) != 0 {
+		msg := a.pending[0]
+		a.pending = a.pending[1:]
+		return msg
+	}
+	return a.receive()
+}
+
+func (a *appClient) receive() map[string]any {
+	a.t.Helper()
 	select {
 	case msg, ok := <-a.lines:
 		if !ok {
@@ -183,8 +195,12 @@ func (a *appClient) call(method string, params map[string]any) map[string]any {
 	id := a.nextID
 	a.send(map[string]any{"id": id, "method": method, "params": params})
 	for {
-		msg := a.next()
+		msg := a.receive()
 		if msg["id"] != float64(id) {
+			// turn/completed can precede the turn/interrupt response.
+			if msg["method"] != nil {
+				a.pending = append(a.pending, msg)
+			}
 			continue
 		}
 		if msg["error"] != nil {
@@ -197,16 +213,34 @@ func (a *appClient) call(method string, params map[string]any) map[string]any {
 
 func (a *appClient) waitTurn() {
 	a.t.Helper()
+	a.waitTurnStatus("", "", "completed")
+}
+
+func (a *appClient) waitTurnStatus(threadID, turnID, status string) {
+	a.t.Helper()
 	for {
 		msg := a.next()
 		if msg["method"] == "turn/completed" {
 			params, _ := msg["params"].(map[string]any)
 			turn, _ := params["turn"].(map[string]any)
-			if turn["status"] != "completed" {
-				a.t.Fatalf("turn did not complete: %v", turn)
+			if threadID != "" && params["threadId"] != threadID || turnID != "" && turn["id"] != turnID {
+				a.t.Fatalf("completion belongs to another turn: %v", params)
+			}
+			if turn["status"] != status {
+				a.t.Fatalf("turn status = %v, want %s", turn["status"], status)
 			}
 			return
 		}
+	}
+}
+
+func (a *appClient) kill() {
+	a.t.Helper()
+	must(a.t, a.cmd.Process.Kill())
+	a.close()
+	status, ok := a.cmd.ProcessState.Sys().(syscall.WaitStatus)
+	if !ok || !status.Signaled() || status.Signal() != syscall.SIGKILL {
+		a.t.Fatalf("app-server was not killed by SIGKILL: %v", a.cmd.ProcessState)
 	}
 }
 
@@ -268,3 +302,29 @@ func decodeLines(t *testing.T, b []byte) []map[string]any {
 	}
 	return result
 }
+
+// An interrupt completion is a notification, so its ordering relative to the
+// RPC response must not decide whether the helper observes the terminal state.
+func TestAppClientPreservesEarlyTurnCompletion(t *testing.T) {
+	for _, status := range []string{"completed", "interrupted"} {
+		t.Run(status, func(t *testing.T) {
+			stdin := new(bytes.Buffer)
+			a := &appClient{t: t, stdin: bufferWriteCloser{stdin}, lines: make(chan map[string]any, 2)}
+			a.lines <- map[string]any{"method": "turn/completed", "params": map[string]any{"threadId": "thread", "turn": map[string]any{"id": "turn", "status": status}}}
+			a.lines <- map[string]any{"id": float64(1), "result": map[string]any{}}
+			close(a.lines)
+			a.call("turn/interrupt", map[string]any{"threadId": "thread", "turnId": "turn"})
+			if len(a.pending) != 1 {
+				t.Fatalf("queued %d notifications, want 1", len(a.pending))
+			}
+			a.waitTurnStatus("thread", "turn", status)
+			if len(a.pending) != 0 {
+				t.Fatal("completion was not consumed")
+			}
+		})
+	}
+}
+
+type bufferWriteCloser struct{ *bytes.Buffer }
+
+func (bufferWriteCloser) Close() error { return nil }

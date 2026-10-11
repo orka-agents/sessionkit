@@ -234,6 +234,13 @@ provider. They verify original roles, ordering, multiplicity, tool arguments and
 nonce output, explicit effective destination settings, native SQLite backfill,
 new appended replies and ordinals, restart, compaction replacement history,
 return into a third home, source preservation, collisions, and active writers.
+A real `turn/interrupt` produces a matching `turn_aborted` record; after native
+unload and process exit, capture/install/resume must retain the interrupted user
+input and original tool history in the actual provider request. A client killed
+with SIGKILL after persisting a blocked turn must instead fail capture with
+`in_flight_turn`, preserve the source, and publish no bundle. These tests do not
+repair unfinished turns or expand accepted formats or abort reasons. See the
+[native gate documentation](native/codex/README.md) for the focused command.
 Source UUID resolution uses read-only `thread/read` so validation cannot append
 to the original. App-server verifies explicit resume settings; native exec
 exercises restart and return. Sandbox/approval bypass settings are confined to

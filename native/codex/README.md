@@ -46,10 +46,39 @@ before contacting the client, and try to capture while a live native writer is
 blocked at the local provider. The compaction request must contain the replacement
 summary and must omit the original tool pair and assistant reply.
 
+`TestNativeInterruptedHandoff` blocks a real turn at that provider, sends
+`turn/interrupt` with the exact thread and turn IDs, and checks the native
+`interrupted` completion and matching `turn_aborted` record with reason
+`interrupted`. After native unload and process exit, it captures the stopped
+source, opens the bundle, installs into a fresh home, and resumes through
+app-server. The actual resumed provider request must contain the original user,
+tool call, tool output, assistant reply, interrupted user input, and new input
+exactly once and in order. The undelivered scripted reply must be absent. The
+test also verifies effective destination settings, appended ordinals and reply,
+SQLite backfill, and unchanged source bytes and mtime.
+
+`TestNativeKilledTurnRejected` waits until the blocked turn's `task_started`
+record is persisted, then sends SIGKILL without interrupt or unload. The stopped
+rollout must have no matching completion or abort. Capture must fail closed with
+`in_flight_turn` at that start ordinal, leave no bundle, preserve source bytes and
+mtime, and make no further provider request. It does not repair or resume an
+unfinished turn. These cases generate records with the pinned client at runtime;
+no fixture is edited and no supported format or recovery rule changes. Other
+accepted abort reasons remain covered by parser tests, not by this native gate.
+
+Run just these cases with the same digest gate:
+
+```sh
+SESSIONKIT_CODEX_BIN="$(./scripts/install-codex.sh)" \
+  go test -count=1 -tags=native -timeout=3m ./native/codex \
+  -run 'TestNative(InterruptedHandoff|KilledTurnRejected)$' -v
+```
+
 The client source is pinned to
 [`a956835d020762cb2b570053af06f643a11c0ecc`](https://github.com/openai/codex/tree/a956835d020762cb2b570053af06f643a11c0ecc).
 The SSE events follow `codex-rs/core/tests/common/responses.rs`; app-server
-parameters follow `codex-rs/app-server-protocol/src/protocol/v2/thread.rs`.
+parameters follow `codex-rs/app-server-protocol/src/protocol/v2/thread.rs`
+and `turn.rs`.
 
 The npm artifacts were downloaded and hashed on 2026-10-02. These are binary
 digests; the corresponding archive digests are also pinned in the installer.
