@@ -1,0 +1,51 @@
+{
+  "operationID": "\u003coperation-id\u003e",
+  "bundleDigest": "\u003cmanifest-sha256\u003e",
+  "profile": "codex/paginated@0.160.0",
+  "threadID": "01a10020-1222-76e3-977d-d5165792ae72",
+  "targetPath": "sessions/2026/10/02/rollout-2026-10-02T21-57-44-01a10020-1222-76e3-977d-d5165792ae72.jsonl",
+  "resumeHints": {
+    "codexHome": "/sessionkit/destination-home",
+    "cwdOverride": "/sessionkit/destination-workspace",
+    "runtimeWorkspaceRoots": [
+      "/sessionkit/destination-workspace"
+    ],
+    "recordedProvider": "stub",
+    "sqliteNote": "CODEX_SQLITE_HOME must be unset or point to this isolated home's private database directory.",
+    "nativeCommand": [
+      "codex",
+      "exec",
+      "resume",
+      "01a10020-1222-76e3-977d-d5165792ae72"
+    ],
+    "appServerParams": {
+      "cwd": "/sessionkit/destination-workspace",
+      "runtimeWorkspaceRoots": [
+        "/sessionkit/destination-workspace"
+      ],
+      "threadId": "01a10020-1222-76e3-977d-d5165792ae72"
+    }
+  },
+  "omitted": [
+    "thread name",
+    "git metadata",
+    "memory mode"
+  ],
+  "preserved": [
+    {
+      "logicalPath": "components/rollout.jsonl",
+      "role": "rollout",
+      "sizeBytes": 25405,
+      "sha256": "f567be1bfe2bf86b50d5a360c266a86f0a6f37fb848ae8cb15bc5433d4750925"
+    }
+  ],
+  "bundleDir": "/sessionkit/bundle",
+  "destination": {
+    "harness": "codex",
+    "cliVersion": "0.160.0",
+    "root": "/sessionkit/destination-home",
+    "workingDir": "/sessionkit/destination-workspace",
+    "journalDir": "/sessionkit/journal"
+  },
+  "planDigest": "\u003cplan-sha256\u003e"
+}
