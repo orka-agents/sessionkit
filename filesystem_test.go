@@ -25,8 +25,8 @@ type replacingSourceAdapter struct {
 	afterInspect           func() error
 }
 
-func (a replacingSourceAdapter) Inspect(ctx context.Context, input io.Reader, rel string, b *budget.Tracker) (Inspection, error) {
-	in, err := a.Adapter.Inspect(ctx, input, rel, b)
+func (a replacingSourceAdapter) Inspect(ctx context.Context, input io.Reader, rel string, allowProviderState bool, b *budget.Tracker) (Inspection, error) {
+	in, err := a.Adapter.Inspect(ctx, input, rel, allowProviderState, b)
 	if err == nil && a.afterInspect != nil {
 		err = a.afterInspect()
 	}

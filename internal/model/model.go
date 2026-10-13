@@ -16,6 +16,9 @@ type Source struct {
 	Harness  Harness
 	Root     string
 	ThreadID string
+	// AllowProviderState keeps opaque provider-bound encrypted content on native
+	// reasoning and compaction items instead of rejecting it.
+	AllowProviderState bool
 }
 type Budget struct {
 	MaxBytes     int64
@@ -54,22 +57,33 @@ type CompactionSummary struct {
 	NewestComplete                bool    `json:"newestComplete"`
 	NewestCompleteBoundaryOrdinal *uint64 `json:"newestCompleteBoundaryOrdinal,omitempty"`
 }
+
+// ProviderStateSummary counts native items whose encrypted_content was kept as
+// opaque provider-bound bytes, including replacement history entries.
+type ProviderStateSummary struct {
+	ReasoningItems  int64 `json:"reasoningItems"`
+	CompactionItems int64 `json:"compactionItems"`
+}
+
+func (s ProviderStateSummary) Present() bool { return s.ReasoningItems+s.CompactionItems > 0 }
+
 type Inspection struct {
-	Profile               Profile           `json:"profile"`
-	ThreadID              string            `json:"threadID"`
-	CLIVersion            string            `json:"cliVersion"`
-	HistoryMode           string            `json:"historyMode"`
-	RecordedCWD           string            `json:"recordedCWD"`
-	LatestCWD             string            `json:"latestCWD"`
-	RuntimeWorkspaceRoots []string          `json:"runtimeWorkspaceRoots"`
-	ModelProvider         string            `json:"modelProvider"`
-	Records               RecordSummary     `json:"records"`
-	Compaction            CompactionSummary `json:"compaction"`
-	Omitted               []string          `json:"omitted"`
-	Warnings              []Warning         `json:"warnings"`
-	Rejections            []Rejection       `json:"rejections"`
-	SourceDigest          string            `json:"sourceDigest"`
-	SourceSizeBytes       int64             `json:"sourceSizeBytes"`
+	Profile               Profile              `json:"profile"`
+	ThreadID              string               `json:"threadID"`
+	CLIVersion            string               `json:"cliVersion"`
+	HistoryMode           string               `json:"historyMode"`
+	RecordedCWD           string               `json:"recordedCWD"`
+	LatestCWD             string               `json:"latestCWD"`
+	RuntimeWorkspaceRoots []string             `json:"runtimeWorkspaceRoots"`
+	ModelProvider         string               `json:"modelProvider"`
+	Records               RecordSummary        `json:"records"`
+	Compaction            CompactionSummary    `json:"compaction"`
+	ProviderState         ProviderStateSummary `json:"providerState"`
+	Omitted               []string             `json:"omitted"`
+	Warnings              []Warning            `json:"warnings"`
+	Rejections            []Rejection          `json:"rejections"`
+	SourceDigest          string               `json:"sourceDigest"`
+	SourceSizeBytes       int64                `json:"sourceSizeBytes"`
 }
 type RejectionError struct{ Rejections []Rejection }
 

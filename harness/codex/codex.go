@@ -159,8 +159,13 @@ type toolCall struct {
 	ordinal uint64
 }
 
-func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tracker *budget.Tracker) (model.Inspection, error) {
+func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, allowProviderState bool, tracker *budget.Tracker) (model.Inspection, error) {
 	inspection := model.Inspection{Profile: model.CodexPaginated, Omitted: []string{"thread name", "git metadata", "memory mode"}, Records: model.RecordSummary{ByType: map[string]int64{}, ResponseItems: map[string]int64{}}}
+	// A nil summary rejects every non-null encrypted_content.
+	var kept *model.ProviderStateSummary
+	if allowProviderState {
+		kept = &inspection.ProviderState
+	}
 	fail := func(err error) (model.Inspection, error) {
 		var rejected *model.RejectionError
 		if errors.As(err, &rejected) {
@@ -402,7 +407,7 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, tr
 				}
 			}
 		}
-		if err := walkWarnings(record, relative, ordinal, warn, tracker); err != nil {
+		if err := walkWarnings(record, recordScope, kept, relative, ordinal, warn, tracker); err != nil {
 			return fail(err)
 		}
 		if rootsChanged && !warned["workspace_root_outside_cwd"] {
@@ -800,30 +805,84 @@ func under(cwd, root string) bool {
 	relative, err := filepath.Rel(cwd, root)
 	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
-func walkWarnings(value any, component string, ordinal uint64, warn func(string, string, uint64), tracker *budget.Tracker) error {
+
+// scope locates the only maps whose own encrypted_content may be provider-bound
+// state: a response item payload and a compacted replacement history entry.
+type scope uint8
+
+const (
+	nestedScope scope = iota
+	recordScope
+	compactedScope
+	historyScope
+	itemScope
+)
+
+func (s scope) child(parent map[string]any, key string) scope {
+	switch {
+	case s == recordScope && key == "payload" && parent["type"] == "response_item":
+		return itemScope
+	case s == recordScope && key == "payload" && parent["type"] == "compacted":
+		return compactedScope
+	case s == compactedScope && key == "replacement_history":
+		return historyScope
+	}
+	return nestedScope
+}
+
+// keepProviderState accepts string encrypted_content on native reasoning and
+// compaction items when kept is non-nil. The bytes are never interpreted.
+func keepProviderState(item map[string]any, value any, at scope, kept *model.ProviderStateSummary, component string, ordinal uint64) error {
+	if kept == nil {
+		return reject(component, "encrypted_content", "encrypted content has no supported native reload contract", ordinal)
+	}
+	_, text := value.(string)
+	if at == itemScope && text {
+		switch item["type"] {
+		case "reasoning":
+			kept.ReasoningItems++
+			return nil
+		case "compaction", "compaction_summary", "context_compaction":
+			kept.CompactionItems++
+			return nil
+		}
+	}
+	return reject(component, "encrypted_content", "provider state is accepted only as encrypted content on reasoning and compaction items", ordinal)
+}
+
+func walkWarnings(value any, at scope, kept *model.ProviderStateSummary, component string, ordinal uint64, warn func(string, string, uint64), tracker *budget.Tracker) error {
 	if err := tracker.Check(); err != nil {
 		return err
 	}
 	switch value := value.(type) {
 	case map[string]any:
 		for key, child := range value {
-			if key == "encrypted_content" && child != nil {
-				return reject(component, "encrypted_content", "encrypted content has no supported native reload contract", ordinal)
-			}
-			if key == "repository_url" {
+			switch {
+			case key == "encrypted_content" && child != nil:
+				if err := keepProviderState(value, child, at, kept, component, ordinal); err != nil {
+					return err
+				}
+			case key == "encrypted_function_args" && child != nil:
+				// Opaque function arguments stay outside the provider-state opt-in.
+				return reject(component, "encrypted_function_args", "encrypted function arguments are not supported", ordinal)
+			case key == "repository_url":
 				if raw, ok := child.(string); ok {
 					if parsed, err := url.Parse(raw); err == nil && parsed.User != nil {
 						warn("repository_url_userinfo", "repository URL contains user information", ordinal)
 					}
 				}
 			}
-			if err := walkWarnings(child, component, ordinal, warn, tracker); err != nil {
+			if err := walkWarnings(child, at.child(value, key), kept, component, ordinal, warn, tracker); err != nil {
 				return err
 			}
 		}
 	case []any:
+		next := nestedScope
+		if at == historyScope {
+			next = itemScope
+		}
 		for _, child := range value {
-			if err := walkWarnings(child, component, ordinal, warn, tracker); err != nil {
+			if err := walkWarnings(child, next, kept, component, ordinal, warn, tracker); err != nil {
 				return err
 			}
 		}

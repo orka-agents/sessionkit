@@ -31,6 +31,10 @@
     "git metadata",
     "memory mode"
   ],
+  "providerState": {
+    "reasoningItems": 0,
+    "compactionItems": 0
+  },
   "preserved": [
     {
       "logicalPath": "components/rollout.jsonl",
@@ -45,7 +49,8 @@
     "cliVersion": "0.160.0",
     "root": "/sessionkit/destination-home",
     "workingDir": "/sessionkit/destination-workspace",
-    "journalDir": "/sessionkit/journal"
+    "journalDir": "/sessionkit/journal",
+    "allowProviderState": false
   },
   "planDigest": "\u003cplan-sha256\u003e"
 }

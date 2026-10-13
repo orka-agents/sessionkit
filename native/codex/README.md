@@ -66,12 +66,25 @@ unfinished turn. These cases generate records with the pinned client at runtime;
 no fixture is edited and no supported format or recovery rule changes. Other
 accepted abort reasons remain covered by parser tests, not by this native gate.
 
+`TestNativeProviderStateHandoff` continues the basic fixture with `exec resume`.
+The provider returns a reasoning item with a fixed `encrypted_content` value and
+an assistant reply, which the client persists. Capture without
+`Source.AllowProviderState` must fail with `encrypted_content` at that record's
+ordinal and publish no bundle. Capture with the opt-in reports one reasoning item.
+Planning into a fresh home must fail with `provider_state` until
+`Destination.AllowProviderState` is set. After installation and app-server resume,
+the actual provider request must contain the original user, tool call, tool output,
+assistant reply, second user prompt, reasoning item, second reply, and new input
+exactly once and in order. Its single reasoning item must carry the same
+`encrypted_content` string. Compaction items with encrypted content are covered by
+parser tests only; the scripted provider does not produce remote compactions.
+
 Run just these cases with the same digest gate:
 
 ```sh
 SESSIONKIT_CODEX_BIN="$(./scripts/install-codex.sh)" \
   go test -count=1 -tags=native -timeout=3m ./native/codex \
-  -run 'TestNative(InterruptedHandoff|KilledTurnRejected)$' -v
+  -run 'TestNative(InterruptedHandoff|KilledTurnRejected|ProviderStateHandoff)$' -v
 ```
 
 The client source is pinned to

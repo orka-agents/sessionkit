@@ -37,6 +37,10 @@
     "newestComplete": true,
     "newestCompleteBoundaryOrdinal": 24
   },
+  "providerState": {
+    "reasoningItems": 0,
+    "compactionItems": 0
+  },
   "omitted": [
     "thread name",
     "git metadata",

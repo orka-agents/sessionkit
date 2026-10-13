@@ -23,7 +23,7 @@ Changing a version label does not make a legacy file supported.
 | Source | `sessions/YYYY/MM/DD/rollout-<timestamp>-<UUIDv7>.jsonl`, with a single first `session_meta`, `history_mode: paginated`, and `cli_version: 0.160.0`. |
 | Records | Every record has a string timestamp and an unsigned integer ordinal, in non-decreasing order. Ordinal gaps are reported. |
 | Identity | Keep the source UUID. Refuse any matching filename under destination `sessions/` or `archived_sessions/`. |
-| Context | Preserve all bytes, opaque passive native records, function/custom tool calls/results, and complete compaction records. Reject types outside the pinned native enums, `Other` response items, request-only compaction triggers, incomplete compactions, and orphan tool calls or outputs in effective history, including replacement history. Provider file IDs and external media URLs are rejected; inline data URLs remain in the rollout. Local-shell and tool-search records are rejected until native validation is available. |
+| Context | Preserve all bytes, opaque passive native records, function/custom tool calls/results, and complete compaction records. Reject types outside the pinned native enums, `Other` response items, request-only compaction triggers, incomplete compactions, and orphan tool calls or outputs in effective history, including replacement history. Provider file IDs and external media URLs are rejected; inline data URLs remain in the rollout. Local-shell and tool-search records are rejected until native validation is available. Non-null `encrypted_content` is rejected unless capture and destination both allow provider state; non-null `encrypted_function_args` is always rejected. |
 | Lineage | Reject non-null `history_base`, fork/parent/subagent fields, inherited/sender response metadata, internal and subagent source classifications, subagent activity/collaboration items, inter-agent communication records, additional metadata records, and `_<rolloutId>` filename suffixes. Ordinary local retained-source metadata stays byte-identical. |
 | Relocation | No rewrites. The caller overrides cwd, runtime workspace roots, provider, and policy at resume. |
 | Quiescence | Acquire Codex's coordination lock, then try the thread's writer lock. An active writer, unfinished turn, or `exec_command` without a terminal `CommandExecution` completion is a typed rejection. Hold the thread lock through copying and digest rechecks using the same home descriptor. |
@@ -74,7 +74,7 @@ plan, err := sessionkit.PlanInstall(ctx, bundle, dst)
 if err != nil {
     return err
 }
-// Review plan.ResumeHints and plan.Omitted. Persist json.Marshal(plan) privately
+// Review plan.ResumeHints, plan.Omitted, and plan.ProviderState. Persist json.Marshal(plan) privately
 // if the caller needs retries across process restarts.
 receipt, err := sessionkit.Install(ctx, plan)
 if err != nil {
@@ -204,9 +204,28 @@ and a missing final newline are rejected. JSON numbers never pass through
 
 There is no automatic redaction. Conversations and tool outputs can contain
 secrets even though authentication files are excluded. Inspection warns about
-repository URL userinfo and workspace roots outside the recorded cwd. Non-null
-`encrypted_content` is rejected until pinned native tests establish a safe reload
-contract. Byte preservation does not prove that another provider will accept it.
+repository URL userinfo and workspace roots outside the recorded cwd.
+
+Non-null `encrypted_content` and `encrypted_function_args` are opaque
+provider-bound state and are rejected by default. With `Source.AllowProviderState`,
+`Inspect` and `Capture` keep string `encrypted_content` on native `reasoning`,
+`compaction`, `compaction_summary`, and `context_compaction` items, including
+replacement history entries. Every other position is still rejected, and
+`encrypted_function_args` is never accepted. `Inspection.ProviderState` counts the
+kept reasoning and compaction items. The manifest records the counts and
+`allowProviderState`; `OpenBundle` re-inspects under that recorded policy.
+`PlanInstall` rejects a bundle with kept content as `provider_state` unless
+`Destination.AllowProviderState` is also set, and `Plan.ProviderState` repeats the
+counts for review.
+
+SessionKit neither interprets nor rewrites these bytes. The pinned client's
+[request construction](https://github.com/openai/codex/blob/a956835d020762cb2b570053af06f643a11c0ecc/codex-rs/core/src/client.rs#L940-L959)
+does not strip kept reasoning when the provider or model changes, and the native
+gate verifies that a kept reasoning item reaches the resumed request unchanged.
+Byte preservation does not prove that the destination provider accepts it;
+providers reject state they cannot decrypt. Allow it only when the destination
+path drops or accepts provider-bound content, for example through a proxy that
+removes state it does not own.
 
 Run the ordinary checks without a native client:
 
@@ -238,9 +257,12 @@ A real `turn/interrupt` produces a matching `turn_aborted` record; after native
 unload and process exit, capture/install/resume must retain the interrupted user
 input and original tool history in the actual provider request. A client killed
 with SIGKILL after persisting a blocked turn must instead fail capture with
-`in_flight_turn`, preserve the source, and publish no bundle. These tests do not
-repair unfinished turns or expand accepted formats or abort reasons. See the
-[native gate documentation](native/codex/README.md) for the focused command.
+`in_flight_turn`, preserve the source, and publish no bundle. A scripted reasoning
+item with fixed `encrypted_content` must fail capture without the opt-in; with both
+opt-ins, the resumed provider request must contain those exact bytes in their
+original position. These tests do not repair unfinished turns or expand accepted
+formats or abort reasons. See the [native gate documentation](native/codex/README.md)
+for the focused command.
 Source UUID resolution uses read-only `thread/read` so validation cannot append
 to the original. App-server verifies explicit resume settings; native exec
 exercises restart and return. Sandbox/approval bypass settings are confined to

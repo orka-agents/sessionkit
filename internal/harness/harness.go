@@ -10,7 +10,8 @@ import (
 )
 
 type Adapter interface {
-	Inspect(context.Context, io.Reader, string, *budget.Tracker) (model.Inspection, error)
+	// Inspect rejects provider-bound state unless allowProviderState is set.
+	Inspect(ctx context.Context, input io.Reader, relative string, allowProviderState bool, tracker *budget.Tracker) (model.Inspection, error)
 	Select(context.Context, model.Source, *fsx.Root, *budget.Tracker) (string, error)
 	Layout(model.Inspection, string) (string, error)
 	LockSource(context.Context, model.Source, *fsx.Root) (io.Closer, error)

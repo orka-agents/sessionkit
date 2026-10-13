@@ -14,6 +14,7 @@ import (
 	"path"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -73,7 +74,7 @@ func Inspect(ctx context.Context, src Source, limits Budget) (Inspection, error)
 		return empty, err
 	}
 	defer func() { _ = f.Close() }()
-	in, err := a.Inspect(ctx, f, rel, b)
+	in, err := a.Inspect(ctx, f, rel, src.AllowProviderState, b)
 	if err == nil {
 		err = root.CheckPath(src.Root)
 	}
@@ -224,7 +225,7 @@ func capture(ctx context.Context, src Source, o CaptureOptions, hook func(string
 	if err != nil {
 		return empty, err
 	}
-	inspection, err := a.Inspect(ctx, f, rel, b)
+	inspection, err := a.Inspect(ctx, f, rel, src.AllowProviderState, b)
 	_ = f.Close()
 	if err != nil {
 		return empty, operationError(b, err)
@@ -235,7 +236,7 @@ func capture(ctx context.Context, src Source, o CaptureOptions, hook func(string
 	if inspection.ThreadID != src.ThreadID {
 		return empty, &IntegrityError{Component: "rollout", Reason: "source thread ID mismatch"}
 	}
-	manifest := makeManifest(src.Harness, rel, inspection, time.Now().UTC().Format(time.RFC3339Nano))
+	manifest := makeManifest(src.Harness, rel, inspection, src.AllowProviderState, time.Now().UTC().Format(time.RFC3339Nano))
 	data, err := bundleio.Encode(manifest)
 	if err != nil {
 		return empty, err
@@ -262,10 +263,11 @@ func capture(ctx context.Context, src Source, o CaptureOptions, hook func(string
 	return Bundle{Dir: o.BundleDir, Manifest: manifest}, nil
 }
 
-func makeManifest(h Harness, rel string, in Inspection, created string) Manifest {
+func makeManifest(h Harness, rel string, in Inspection, allowProviderState bool, created string) Manifest {
 	return Manifest{BundleFormat: 1, Harness: h, Profile: in.Profile, AdapterVersion: "1", SourceCLIVersion: in.CLIVersion,
 		ThreadID: in.ThreadID, SourceRelativePath: rel, RecordedCWD: in.RecordedCWD, LatestCWD: in.LatestCWD,
-		RuntimeWorkspaceRoots: in.RuntimeWorkspaceRoots, ModelProvider: in.ModelProvider, Omitted: in.Omitted, CreatedAt: created,
+		RuntimeWorkspaceRoots: in.RuntimeWorkspaceRoots, ModelProvider: in.ModelProvider, AllowProviderState: allowProviderState,
+		ProviderState: in.ProviderState, Omitted: in.Omitted, CreatedAt: created,
 		Components: []Component{{LogicalPath: bundleio.RolloutPath, Role: "rollout", SizeBytes: in.SourceSizeBytes, SHA256: in.SourceDigest}}, Inspection: in}
 }
 
@@ -330,12 +332,13 @@ func openBundle(ctx context.Context, dir string, b *budget.Tracker) (Bundle, str
 	if err != nil {
 		return empty, "", err
 	}
-	in, err := a.Inspect(ctx, f, m.SourceRelativePath, b)
+	// The capture policy recorded in the manifest decides provider-state acceptance.
+	in, err := a.Inspect(ctx, f, m.SourceRelativePath, m.AllowProviderState, b)
 	_ = f.Close()
 	if err != nil {
 		return empty, "", operationError(b, err)
 	}
-	expected := makeManifest(m.Harness, m.SourceRelativePath, in, m.CreatedAt)
+	expected := makeManifest(m.Harness, m.SourceRelativePath, in, m.AllowProviderState, m.CreatedAt)
 	if !reflect.DeepEqual(m, expected) {
 		return empty, "", &IntegrityError{Component: "manifest", Reason: "manifest does not match rollout bytes and inspection"}
 	}
@@ -502,6 +505,9 @@ func PlanInstall(ctx context.Context, bundle Bundle, dst Destination) (Plan, err
 	if dst.Harness != checked.Manifest.Harness {
 		return empty, reject("harness", "source and destination harnesses differ")
 	}
+	if err = checkProviderState(checked.Manifest, dst); err != nil {
+		return empty, err
+	}
 	if err = validateDestination(dst); err != nil {
 		return empty, err
 	}
@@ -539,7 +545,7 @@ func PlanInstall(ctx context.Context, bundle Bundle, dst Destination) (Plan, err
 	}
 	roots := []string{dst.WorkingDir}
 	p := Plan{OperationID: id, BundleDigest: digest, Profile: checked.Manifest.Profile, ThreadID: checked.Manifest.ThreadID,
-		TargetPath: target, Omitted: checked.Manifest.Omitted, Preserved: checked.Manifest.Components,
+		TargetPath: target, Omitted: checked.Manifest.Omitted, ProviderState: checked.Manifest.ProviderState, Preserved: checked.Manifest.Components,
 		ResumeHints: ResumeHints{CodexHome: dst.Root, CWDOverride: dst.WorkingDir, RuntimeWorkspaceRoots: roots,
 			RecordedProvider: checked.Manifest.ModelProvider, SQLiteNote: "CODEX_SQLITE_HOME must be unset or point to this isolated home's private database directory.",
 			NativeCommand:   []string{"codex", "exec", "resume", checked.Manifest.ThreadID},
@@ -551,12 +557,22 @@ func PlanInstall(ctx context.Context, bundle Bundle, dst Destination) (Plan, err
 	}
 	return p, nil
 }
+
+// checkProviderState requires a destination opt-in for provider-bound content
+// that the capture opt-in kept.
+func checkProviderState(m Manifest, dst Destination) error {
+	if m.ProviderState.Present() && !dst.AllowProviderState {
+		return reject("provider_state", "bundle contains provider-bound encrypted content; the destination must allow provider state")
+	}
+	return nil
+}
+
 func planSeal(p Plan) string {
 	raw, err := json.Marshal(planFields(p))
 	if err != nil {
 		return ""
 	}
-	return sha(append(raw, []byte(p.bundleDir+"\x00"+p.destination.Root+"\x00"+p.destination.WorkingDir+"\x00"+p.destination.JournalDir+"\x00"+string(p.destination.Harness))...))
+	return sha(append(raw, []byte(p.bundleDir+"\x00"+p.destination.Root+"\x00"+p.destination.WorkingDir+"\x00"+p.destination.JournalDir+"\x00"+string(p.destination.Harness)+"\x00"+strconv.FormatBool(p.destination.AllowProviderState))...))
 }
 
 // Verification compares the rollout against the receipt without starting Codex.

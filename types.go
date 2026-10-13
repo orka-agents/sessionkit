@@ -24,6 +24,7 @@ type Budget = model.Budget
 type Inspection = model.Inspection
 type RecordSummary = model.RecordSummary
 type CompactionSummary = model.CompactionSummary
+type ProviderStateSummary = model.ProviderStateSummary
 type Warning = model.Warning
 type Rejection = model.Rejection
 type RejectionError = model.RejectionError
@@ -43,33 +44,42 @@ type Component struct {
 	SizeBytes   int64  `json:"sizeBytes"`
 	SHA256      string `json:"sha256"`
 }
+
+// Manifest records the capture's provider-state opt-in; OpenBundle reapplies it.
 type Manifest struct {
-	BundleFormat          int         `json:"bundleFormat"`
-	Harness               Harness     `json:"harness"`
-	Profile               Profile     `json:"profile"`
-	AdapterVersion        string      `json:"adapterVersion"`
-	SourceCLIVersion      string      `json:"sourceCLIVersion"`
-	ThreadID              string      `json:"threadID"`
-	SourceRelativePath    string      `json:"sourceRelativePath"`
-	RecordedCWD           string      `json:"recordedCWD"`
-	LatestCWD             string      `json:"latestCWD"`
-	RuntimeWorkspaceRoots []string    `json:"runtimeWorkspaceRoots"`
-	ModelProvider         string      `json:"modelProvider"`
-	Omitted               []string    `json:"omitted"`
-	CreatedAt             string      `json:"createdAt"`
-	Components            []Component `json:"components"`
-	Inspection            Inspection  `json:"inspection"`
+	BundleFormat          int                  `json:"bundleFormat"`
+	Harness               Harness              `json:"harness"`
+	Profile               Profile              `json:"profile"`
+	AdapterVersion        string               `json:"adapterVersion"`
+	SourceCLIVersion      string               `json:"sourceCLIVersion"`
+	ThreadID              string               `json:"threadID"`
+	SourceRelativePath    string               `json:"sourceRelativePath"`
+	RecordedCWD           string               `json:"recordedCWD"`
+	LatestCWD             string               `json:"latestCWD"`
+	RuntimeWorkspaceRoots []string             `json:"runtimeWorkspaceRoots"`
+	ModelProvider         string               `json:"modelProvider"`
+	AllowProviderState    bool                 `json:"allowProviderState"`
+	ProviderState         ProviderStateSummary `json:"providerState"`
+	Omitted               []string             `json:"omitted"`
+	CreatedAt             string               `json:"createdAt"`
+	Components            []Component          `json:"components"`
+	Inspection            Inspection           `json:"inspection"`
 }
 type Bundle struct {
 	Dir      string
 	Manifest Manifest
 }
+
+// Destination is an isolated install target. AllowProviderState accepts a bundle
+// that kept provider-bound encrypted content; the destination path must drop or
+// accept that content.
 type Destination struct {
-	Harness    Harness `json:"harness"`
-	CLIVersion string  `json:"cliVersion"`
-	Root       string  `json:"root"`
-	WorkingDir string  `json:"workingDir"`
-	JournalDir string  `json:"journalDir"`
+	Harness            Harness `json:"harness"`
+	CLIVersion         string  `json:"cliVersion"`
+	Root               string  `json:"root"`
+	WorkingDir         string  `json:"workingDir"`
+	JournalDir         string  `json:"journalDir"`
+	AllowProviderState bool    `json:"allowProviderState"`
 }
 type ResumeHints struct {
 	CodexHome             string         `json:"codexHome"`
@@ -85,17 +95,18 @@ type ResumeHints struct {
 // fields are informational. Install rejects an altered plan. JSON serialization
 // retains the bundle and destination binding for retries after a process restart.
 type Plan struct {
-	OperationID  string      `json:"operationID"`
-	BundleDigest string      `json:"bundleDigest"`
-	Profile      Profile     `json:"profile"`
-	ThreadID     string      `json:"threadID"`
-	TargetPath   string      `json:"targetPath"`
-	ResumeHints  ResumeHints `json:"resumeHints"`
-	Omitted      []string    `json:"omitted"`
-	Preserved    []Component `json:"preserved"`
-	bundleDir    string
-	destination  Destination
-	seal         string
+	OperationID   string               `json:"operationID"`
+	BundleDigest  string               `json:"bundleDigest"`
+	Profile       Profile              `json:"profile"`
+	ThreadID      string               `json:"threadID"`
+	TargetPath    string               `json:"targetPath"`
+	ResumeHints   ResumeHints          `json:"resumeHints"`
+	Omitted       []string             `json:"omitted"`
+	ProviderState ProviderStateSummary `json:"providerState"`
+	Preserved     []Component          `json:"preserved"`
+	bundleDir     string
+	destination   Destination
+	seal          string
 }
 type Outcome string
 

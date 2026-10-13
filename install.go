@@ -114,8 +114,12 @@ func install(ctx context.Context, p Plan, hook installHook) (Receipt, error) {
 	if digest != p.BundleDigest {
 		return failBeforePublication(&IntegrityError{Component: "bundle", Reason: "bundle changed since planning"})
 	}
-	if checked.Manifest.ThreadID != p.ThreadID || checked.Manifest.Profile != p.Profile || checked.Manifest.SourceRelativePath != p.TargetPath || checked.Manifest.Components[0] != p.Preserved[0] {
+	if checked.Manifest.ThreadID != p.ThreadID || checked.Manifest.Profile != p.Profile || checked.Manifest.SourceRelativePath != p.TargetPath || checked.Manifest.Components[0] != p.Preserved[0] ||
+		checked.Manifest.ProviderState != p.ProviderState {
 		return failBeforePublication(&IntegrityError{Component: "plan", Reason: "plan does not match verified bundle"})
+	}
+	if err = checkProviderState(checked.Manifest, p.destination); err != nil {
+		return failBeforePublication(err)
 	}
 	if state.Phase == "planned" {
 		if err = collision(root, p.ThreadID, "", b); err != nil {

@@ -36,7 +36,11 @@ func line(t *testing.T, ordinal uint64, kind string, payload any) string {
 }
 func inspect(t *testing.T, data string) (model.Inspection, error) {
 	t.Helper()
-	return (Adapter{}).Inspect(context.Background(), strings.NewReader(data), testPath, budget.New(context.Background(), model.Budget{}))
+	return inspectWith(t, data, false)
+}
+func inspectWith(t *testing.T, data string, allowProviderState bool) (model.Inspection, error) {
+	t.Helper()
+	return (Adapter{}).Inspect(context.Background(), strings.NewReader(data), testPath, allowProviderState, budget.New(context.Background(), model.Budget{}))
 }
 
 func TestWarningTraversalStopsWhenCanceled(t *testing.T) {
@@ -48,7 +52,7 @@ func TestWarningTraversalStopsWhenCanceled(t *testing.T) {
 	err := walkWarnings([]any{
 		map[string]any{"repository_url": repository},
 		map[string]any{"repository_url": repository},
-	}, testPath, 1, func(string, string, uint64) {
+	}, recordScope, nil, testPath, 1, func(string, string, uint64) {
 		warnings++
 		cancel()
 	}, tracker)
@@ -794,5 +798,98 @@ func TestEncryptedContentRejects(t *testing.T) {
 	_, err := inspect(t, line(t, 0, "session_meta", meta())+line(t, 1, "response_item", map[string]any{"type": "reasoning", "encrypted_content": nil}))
 	if err != nil {
 		t.Fatalf("null optional encrypted content rejected: %v", err)
+	}
+}
+
+func TestProviderStateOptIn(t *testing.T) {
+	reasoning := map[string]any{"type": "reasoning", "summary": []any{}, "encrypted_content": "opaque-reasoning"}
+	compaction := map[string]any{"type": "compaction", "encrypted_content": "opaque-compaction"}
+	call := map[string]any{"type": "function_call", "call_id": "call-1", "name": "test", "arguments": "{}"}
+	output := map[string]any{"type": "function_call_output", "call_id": "call-1", "output": "done"}
+	data := line(t, 0, "session_meta", meta()) +
+		line(t, 1, "response_item", reasoning) +
+		line(t, 2, "response_item", compaction) +
+		line(t, 3, "response_item", map[string]any{"type": "compaction_summary", "encrypted_content": "opaque-summary"}) +
+		line(t, 4, "response_item", map[string]any{"type": "context_compaction", "encrypted_content": "opaque-context"}) +
+		line(t, 5, "response_item", map[string]any{"type": "context_compaction", "encrypted_content": nil}) +
+		line(t, 6, "compacted", map[string]any{"message": "summary", "window_number": 1, "replacement_history": []any{reasoning, call, output, compaction}})
+	_, err := inspect(t, data)
+	assertRejection(t, err, "encrypted_content")
+	got, err := inspectWith(t, data, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ProviderState != (model.ProviderStateSummary{ReasoningItems: 2, CompactionItems: 4}) || !got.ProviderState.Present() {
+		t.Fatalf("provider state: %+v", got.ProviderState)
+	}
+	digest := sha256.Sum256([]byte(data))
+	if got.SourceDigest != hex.EncodeToString(digest[:]) || got.SourceSizeBytes != int64(len(data)) {
+		t.Fatal("digest or byte count changed")
+	}
+	plain, err := inspectWith(t, line(t, 0, "session_meta", meta())+line(t, 1, "response_item", map[string]any{"type": "reasoning", "summary": []any{}, "encrypted_content": nil}), true)
+	if err != nil || plain.ProviderState.Present() {
+		t.Fatalf("null encrypted content counted: %+v %v", plain.ProviderState, err)
+	}
+}
+
+func TestProviderStateOptInRejectsOtherPositions(t *testing.T) {
+	call := map[string]any{"type": "function_call", "call_id": "call-1", "name": "test", "arguments": "{}"}
+	for _, tc := range []struct {
+		name, kind string
+		payload    map[string]any
+	}{
+		{"compacted record", "compacted", map[string]any{"message": "summary", "replacement_history": []any{}, "window_number": 1, "encrypted_content": "opaque"}},
+		{"message", "response_item", map[string]any{"type": "message", "role": "assistant", "content": []any{}, "encrypted_content": "opaque"}},
+		{"message content", "response_item", map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "input_text", "text": "message", "encrypted_content": "opaque"}}}},
+		{"tool output content", "compacted", map[string]any{"message": "summary", "window_number": 1, "replacement_history": []any{call, map[string]any{"type": "function_call_output", "call_id": "call-1", "output": []any{map[string]any{"type": "encrypted_content", "encrypted_content": "opaque"}}}}}},
+		{"nested reasoning", "response_item", map[string]any{"type": "additional_tools", "role": "developer", "tools": []any{map[string]any{"type": "reasoning", "encrypted_content": "opaque"}}}},
+		{"event", "event_msg", map[string]any{"type": "raw_response_item", "item": map[string]any{"type": "reasoning", "encrypted_content": "opaque"}}},
+		{"numeric", "response_item", map[string]any{"type": "reasoning", "summary": []any{}, "encrypted_content": 1}},
+		{"object", "response_item", map[string]any{"type": "compaction", "encrypted_content": map[string]any{"opaque": "value"}}},
+		{"replacement message", "compacted", map[string]any{"message": "summary", "window_number": 1, "replacement_history": []any{map[string]any{"type": "message", "role": "user", "content": []any{}, "encrypted_content": "opaque"}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := inspectWith(t, line(t, 0, "session_meta", meta())+line(t, 1, tc.kind, tc.payload), true)
+			assertRejection(t, err, "encrypted_content")
+			if got.Rejections[0].Ordinal != 1 || strings.Contains(err.Error(), "opaque") {
+				t.Fatal("provider-state rejection lost its ordinal or exposed content")
+			}
+		})
+	}
+	raw, err := json.Marshal(map[string]any{"timestamp": "2025-04-01T00:30:00Z", "ordinal": 1, "type": "response_item", "encrypted_content": "opaque", "payload": map[string]any{"type": "reasoning", "summary": []any{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = inspectWith(t, line(t, 0, "session_meta", meta())+string(raw)+"\n", true)
+	assertRejection(t, err, "encrypted_content")
+}
+
+func TestEncryptedFunctionArgsReject(t *testing.T) {
+	output := map[string]any{"type": "function_call_output", "call_id": "call-1", "output": "done"}
+	for _, args := range []any{[]any{"opaque"}, []any{}, nil} {
+		for _, replacement := range []bool{false, true} {
+			for _, allow := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%v/replacement_%t/allow_%t", args, replacement, allow), func(t *testing.T) {
+					call := map[string]any{"type": "function_call", "call_id": "call-1", "name": "test", "arguments": "{}", "encrypted_function_args": args}
+					data := line(t, 0, "session_meta", meta())
+					if replacement {
+						data += line(t, 1, "compacted", map[string]any{"message": "summary", "window_number": 1, "replacement_history": []any{call, output}})
+					} else {
+						data += line(t, 1, "response_item", call) + line(t, 2, "response_item", output)
+					}
+					got, err := inspectWith(t, data, allow)
+					if args == nil {
+						if err != nil {
+							t.Fatal(err)
+						}
+						return
+					}
+					assertRejection(t, err, "encrypted_function_args")
+					if got.Rejections[0].Ordinal != 1 || strings.Contains(err.Error(), "opaque") {
+						t.Fatal("function argument rejection lost its ordinal or exposed content")
+					}
+				})
+			}
+		}
 	}
 }
