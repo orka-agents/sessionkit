@@ -197,6 +197,7 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, al
 	counted := &countReader{input: io.TeeReader(input, digest)}
 	reader := jsonl.New(counted, tracker)
 	pending := make(map[string]toolCall)
+	agents := newSubagents(id)
 	turns := make(map[string]uint64)
 	commands := make(map[string]uint64)
 	completedCommands := make(map[string]bool)
@@ -291,9 +292,17 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, al
 					commands[id] = ordinal
 					delete(completedCommands, id)
 				}
+				if itemKind == "function_call" {
+					agents.call(payload, ordinal)
+				}
 			case "function_call_output", "custom_tool_call_output":
 				inspection.Records.ToolOutputs++
 				inspection.Records.ToolPairs++
+				if itemKind == "function_call_output" {
+					if err := agents.output(payload["call_id"].(string), relative); err != nil {
+						return fail(err)
+					}
+				}
 			}
 		case "compacted":
 			if _, ok := payload["message"].(string); !ok {
@@ -342,6 +351,9 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, al
 			if len(replacementCalls) > 0 {
 				return fail(reject(relative, "orphan_tool_call", "compaction tool call has no matching output", ordinal))
 			}
+			if err := agents.compacted(relative, ordinal, tracker); err != nil {
+				return fail(err)
+			}
 			clear(pending)
 			inspection.Compaction.Count++
 			inspection.Compaction.NewestComplete = true
@@ -358,8 +370,15 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, al
 			switch payload["type"] {
 			case "item_started", "item_completed":
 				item, _ := payload["item"].(map[string]any)
-				if item["type"] == "SubAgentActivity" || item["type"] == "CollabAgentToolCall" {
+				// Native clients persist only completed collaboration items, and only
+				// a parent's own tool calls are accepted.
+				if item["type"] == "SubAgentActivity" || item["type"] == "CollabAgentToolCall" && eventKind == "item_started" {
 					return fail(reject(relative, "subagent", "subagent turn items are not supported", ordinal))
+				}
+				if item["type"] == "CollabAgentToolCall" {
+					if err := agents.item(payload, item, relative, ordinal, tracker); err != nil {
+						return fail(err)
+					}
 				}
 				if eventKind == "item_completed" && item["type"] == "CommandExecution" && payload["thread_id"] == inspection.ThreadID {
 					switch item["status"] {
@@ -472,6 +491,10 @@ func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, al
 		}
 		return fail(reject(relative, "active_command", "exec command has no terminal command completion", ordinal))
 	}
+	if err := agents.finish(relative, inspection.Records.LastOrdinal, tracker); err != nil {
+		return fail(err)
+	}
+	inspection.Omitted = append(inspection.Omitted, agents.omitted()...)
 	if inspection.Records.OrdinalGaps > 0 {
 		warn("ordinal_gaps", "record ordinal gaps are preserved", inspection.Records.LastOrdinal)
 	}

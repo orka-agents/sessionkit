@@ -1,0 +1,52 @@
+{
+  "profile": "codex/paginated@0.160.0",
+  "threadID": "01a13406-d48e-71b1-99dd-3d9e1b40b8ad",
+  "cliVersion": "0.160.0",
+  "historyMode": "paginated",
+  "recordedCWD": "/sessionkit/source-workspace",
+  "latestCWD": "/sessionkit/source-workspace",
+  "runtimeWorkspaceRoots": [
+    "/sessionkit/source-workspace"
+  ],
+  "modelProvider": "stub",
+  "records": {
+    "total": 31,
+    "byType": {
+      "event_msg": 11,
+      "response_item": 11,
+      "session_meta": 1,
+      "token_usage_record": 4,
+      "turn_context": 1,
+      "world_state": 3
+    },
+    "responseItems": {
+      "function_call": 3,
+      "function_call_output": 3,
+      "message": 5
+    },
+    "firstOrdinal": 0,
+    "lastOrdinal": 30,
+    "ordinalGaps": 0,
+    "toolCalls": 3,
+    "toolOutputs": 3,
+    "toolPairs": 3
+  },
+  "compaction": {
+    "count": 0,
+    "newestComplete": false
+  },
+  "providerState": {
+    "reasoningItems": 0,
+    "compactionItems": 0
+  },
+  "omitted": [
+    "thread name",
+    "git metadata",
+    "memory mode",
+    "subagent threads (1)"
+  ],
+  "warnings": null,
+  "rejections": null,
+  "sourceDigest": "3d458d2a3fad526a5f98c34ae1702ab585280665dfaed63a524c2b50c0358a71",
+  "sourceSizeBytes": 44374
+}

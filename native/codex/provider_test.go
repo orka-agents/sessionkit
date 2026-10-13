@@ -19,6 +19,10 @@ type responseTurn struct {
 	items   []map[string]any
 	entered chan struct{}
 	release chan struct{}
+	// match routes concurrent parent and subagent requests; nil accepts any
+	// request. build derives items from the request when set.
+	match func(request map[string]any) bool
+	build func(request map[string]any) []map[string]any
 }
 
 type stubProvider struct {
@@ -76,15 +80,25 @@ func (s *stubProvider) serve(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.requests = append(s.requests, body)
 	id := fmt.Sprintf("sessionkit-response-%d", len(s.requests))
-	if len(s.turns) == 0 {
+	next := -1
+	for i, turn := range s.turns {
+		if turn.match == nil || turn.match(body) {
+			next = i
+			break
+		}
+	}
+	if next < 0 {
 		s.errors = append(s.errors, "unexpected Responses request")
 		s.mu.Unlock()
 		http.Error(w, "no scripted response", http.StatusInternalServerError)
 		return
 	}
-	turn := s.turns[0]
-	s.turns = s.turns[1:]
+	turn := s.turns[next]
+	s.turns = append(s.turns[:next:next], s.turns[next+1:]...)
 	s.mu.Unlock()
+	if turn.build != nil {
+		turn.items = turn.build(body)
+	}
 	if turn.entered != nil {
 		close(turn.entered)
 	}

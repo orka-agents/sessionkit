@@ -39,13 +39,22 @@ release that wrote it.
 | Records | Every record has a string timestamp and an unsigned integer ordinal, in non-decreasing order. Ordinal gaps are reported. |
 | Identity | Keep the source UUID. Refuse any matching filename under destination `sessions/` or `archived_sessions/`. |
 | Context | Preserve all bytes, opaque passive native records, function/custom tool calls/results, and complete compaction records. Reject types outside the pinned native enums, `Other` response items, request-only compaction triggers, incomplete compactions, and orphan tool calls or outputs in effective history, including replacement history. Provider file IDs and external media URLs are rejected; inline data URLs remain in the rollout. Local-shell and tool-search records are rejected until native validation is available. Non-null `encrypted_content` is rejected unless capture and destination both allow provider state; non-null `encrypted_function_args` is always rejected. |
-| Lineage | Reject non-null `history_base`, fork/parent/subagent fields, inherited/sender response metadata, internal and subagent source classifications, subagent activity/collaboration items, inter-agent communication records, additional metadata records, and `_<rolloutId>` filename suffixes. Ordinary local retained-source metadata stays byte-identical. |
+| Lineage | Reject non-null `history_base`, fork/parent/subagent fields, inherited/sender response metadata, internal and subagent source classifications, subagent activity items, collaboration events, started collaboration items, `agent_message` response items, inter-agent communication records, additional metadata records, and `_<rolloutId>` filename suffixes. Ordinary local retained-source metadata stays byte-identical. |
+| Subagent parents | Accept a parent's multi-agent v1 calls (`spawn_agent`, `send_input`, `wait_agent`, `close_agent`, `resume_agent` in the `multi_agent_v1` namespace). Each persisted `CollabAgentToolCall` `item_completed` must belong to the selected thread, have status `completed` or `failed`, name a v1 tool, and match a pending call whose output follows in effective history. `spawn_agent` and `resume_agent` calls in that namespace, or unnamespaced as in v2, require that item. Every child named by a spawn, or by a completed resume, must be closed later by a completed `close_agent` item; otherwise capture fails with `open_subagent` at the opening item's ordinal. A multi-agent call whose output a compaction discarded is rejected. Child threads are never captured. |
 | Relocation | No rewrites. The caller overrides cwd, runtime workspace roots, provider, and policy at resume. |
 | Quiescence | Acquire Codex's coordination lock, then try the thread's writer lock. An active writer, unfinished turn, or `exec_command` without a terminal `CommandExecution` completion is a typed rejection. Hold the thread lock through copying and digest rechecks using the same home descriptor. |
 | Installation | Private staging, file fsync, hard-link publication without replacement, directory fsync, and digest verification. Probe the destination thread's writer lock while holding Codex's coordination lock across publication. |
-| Omitted metadata | Thread name, git metadata, and memory mode are reported as omitted. Their paginated metadata lives outside the selected rollout. Any historical metadata already in the file remains byte-identical. |
+| Omitted metadata | Thread name, git metadata, and memory mode are reported as omitted. Their paginated metadata lives outside the selected rollout. Any historical metadata already in the file remains byte-identical. A subagent parent also reports `subagent threads (N)`, the number of distinct child threads it opened. |
 | Unsupported files | Legacy, compressed `.jsonl.zst`, archived sources, and multi-file lineage. |
 | Host | Linux and macOS, with Go 1.26 or later and a filesystem supporting `flock`, hard links, and directory fsync. |
+
+A subagent parent moves alone. Its child rollouts and the source's spawn edges
+stay in the source home, and neither pinned client restores children on a
+top-level resume. In the destination, a later multi-agent call with an old child
+ID is a model-visible tool error such as `agent with id … not found`, not a turn
+failure. The parent's `<subagent_notification>` messages and `world_state`
+subagent lists remain byte-identical history. Multi-agent v2 tools and child
+threads themselves remain unsupported.
 
 Use a pinned client for sessions intended to migrate. A state database must be
 available when the source thread is created so Codex writes paginated history.
@@ -286,7 +295,12 @@ with SIGKILL after persisting a blocked turn must instead fail capture with
 item with fixed `encrypted_content` must fail capture without the opt-in; with both
 opt-ins, the resumed provider request must contain those exact bytes in their
 original position. These tests do not repair unfinished turns or expand accepted
-formats or abort reasons. See the [native gate documentation](native/codex/README.md)
+abort reasons. A native parent that spawns a child, waits, and closes it is
+captured alone, installed, and resumed; its spawn, wait, and close pairs must
+reach the provider exactly once and in order, a new reply must persist, and a
+`send_input` to the old child ID must return the native `not found` tool output.
+A parent that leaves its child open must fail capture with `open_subagent` and
+publish no bundle. See the [native gate documentation](native/codex/README.md)
 for the focused command.
 Source UUID resolution uses read-only `thread/read` so validation cannot append
 to the original. App-server verifies explicit resume settings; native exec
@@ -303,7 +317,8 @@ both test layers.
 Follow-up scope is tracked in [lineage bundles](https://github.com/orka-agents/sessionkit/issues/2),
 [identity and metadata extensions](https://github.com/orka-agents/sessionkit/issues/3),
 and [compressed sources and conversion](https://github.com/orka-agents/sessionkit/issues/4).
-Legacy compatibility, shared-home identities, subagents, and cross-harness
-conversion need separate profiles and native evidence before support expands.
+Legacy compatibility, shared-home identities, subagent child threads, and
+cross-harness conversion need separate profiles and native evidence before
+support expands.
 
 Licensed under [MIT](LICENSE).

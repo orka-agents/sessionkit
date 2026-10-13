@@ -87,12 +87,45 @@ exactly once and in order. Its single reasoning item must carry the same
 `encrypted_content` string. Compaction items with encrypted content are covered by
 parser tests only; the scripted provider does not produce remote compactions.
 
+The subagent cases need no extra configuration. `multi_agent` is a stable feature
+enabled by default in both pinned clients, so the fixture config sets no feature
+flag for it, and `multi_agent_v2` stays disabled by default. The scripted provider
+routes concurrent requests by content: parent requests carry the parent prompt
+and are matched by their newest tool output, and the child's request carries only
+its own prompt. The model calls the `multi_agent_v1` namespace tools.
+
+A child's completion injects a `<subagent_notification>` user message into its
+parent. During a running parent turn it is pending input for the next request,
+so the script orders it: a closing parent continues only after the child's turn
+is persisted, and an open child answers only after the parent's turn has ended.
+
+`TestNativeSubagentParentHandoff` starts a parent through app-server in home A.
+The parent calls `spawn_agent`; the child answers; the parent calls `wait_agent`
+and `close_agent` with the child ID from the native spawn output and replies.
+After unload, A holds both rollouts, and the parent's `spawn_agent`, `wait`, and
+`close_agent` items are `completed` with that child as receiver. Capture selects
+only the parent, and the manifest and plan report `subagent threads (1)`. After
+installation into a fresh home B and app-server resume with explicit settings,
+the actual provider request must contain the parent prompt, the three agent tool
+pairs, the parent reply, and the new prompt exactly once and in order. The turn
+completes with a newly persisted reply, SQLite backfills the row, and B holds no
+child rollout. A further turn calls `send_input` with the old child ID; the native
+tool output must be `agent with id <child> not found`, the turn must complete, and
+the reply after it must persist. The resulting `failed` `send_input` item is then
+accepted by a second capture from B. Source bytes and mtime stay unchanged.
+
+`TestNativeSubagentOpenRejected` runs the same spawn, but the parent replies
+without waiting or closing. The child then answers, and the idle parent records
+its notification without a new turn. Capture must fail with exactly one
+`open_subagent` rejection at the spawn item's ordinal, publish no bundle,
+preserve the source, and make no provider request.
+
 Run just these cases with the same digest gate:
 
 ```sh
 SESSIONKIT_CODEX_BIN="$(./scripts/install-codex.sh 0.162.1)" \
   go test -count=1 -tags=native -timeout=3m ./native/codex \
-  -run 'TestNative(InterruptedHandoff|KilledTurnRejected|ProviderStateHandoff)$' -v
+  -run 'TestNative(InterruptedHandoff|KilledTurnRejected|ProviderStateHandoff|SubagentParentHandoff|SubagentOpenRejected)$' -v
 ```
 
 The client sources are pinned to

@@ -294,6 +294,163 @@ func TestSubagentActivityRejectsAfterParentCompletes(t *testing.T) {
 	}
 }
 
+const childOne = "0195e76b-7c5e-7123-8123-4567890000c1"
+const childTwo = "0195e76b-7c5e-7123-8123-4567890000c2"
+
+// record is one rollout line before ordinals are assigned.
+type record struct {
+	kind    string
+	payload map[string]any
+}
+
+func agentFunction(callID, name string) record {
+	return record{"response_item", map[string]any{"type": "function_call", "call_id": callID, "namespace": "multi_agent_v1", "name": name, "arguments": "{}"}}
+}
+
+func agentOutput(callID string) record {
+	return record{"response_item", map[string]any{"type": "function_call_output", "call_id": callID, "output": "{}"}}
+}
+
+func agentItem(callID, tool, status string, receivers ...string) record {
+	if receivers == nil {
+		receivers = []string{}
+	}
+	return record{"event_msg", map[string]any{"type": "item_completed", "thread_id": testThread, "turn_id": "parent", "item": map[string]any{
+		"type": "CollabAgentToolCall", "id": callID, "tool": tool, "status": status, "sender_thread_id": testThread, "receiver_thread_ids": receivers}}}
+}
+
+// agentPair is a native multi-agent call: function call, completed item, output.
+func agentPair(callID, tool, status string, receivers ...string) []record {
+	return []record{agentFunction(callID, agentTools[tool]), agentItem(callID, tool, status, receivers...), agentOutput(callID)}
+}
+
+func parentRollout(t *testing.T, records ...[]record) string {
+	t.Helper()
+	data := line(t, 0, "session_meta", meta())
+	ordinal := uint64(1)
+	for _, group := range records {
+		for _, r := range group {
+			data += line(t, ordinal, r.kind, r.payload)
+			ordinal++
+		}
+	}
+	return data
+}
+
+func TestSubagentParentLifecycle(t *testing.T) {
+	omitted := func(extra ...string) []string {
+		return append([]string{"thread name", "git metadata", "memory mode"}, extra...)
+	}
+	for _, tc := range []struct {
+		name    string
+		records [][]record
+		code    string
+		ordinal uint64
+		omitted []string
+	}{
+		{"spawn wait close", [][]record{agentPair("spawn", "spawn_agent", "completed", childOne), agentPair("wait", "wait", "completed", childOne), agentPair("close", "close_agent", "completed", childOne)}, "", 0, omitted("subagent threads (1)")},
+		{"failed spawn without child", [][]record{agentPair("spawn", "spawn_agent", "failed")}, "", 0, omitted()},
+		{"failed spawn of errored child closed", [][]record{agentPair("spawn", "spawn_agent", "failed", childOne), agentPair("close", "close_agent", "completed", childOne)}, "", 0, omitted("subagent threads (1)")},
+		{"failed spawn of errored child open", [][]record{agentPair("spawn", "spawn_agent", "failed", childOne)}, "open_subagent", 2, nil},
+		{"open child", [][]record{agentPair("spawn", "spawn_agent", "completed", childOne), agentPair("wait", "wait", "completed", childOne)}, "open_subagent", 2, nil},
+		{"failed close", [][]record{agentPair("spawn", "spawn_agent", "completed", childOne), agentPair("close", "close_agent", "failed", childOne)}, "open_subagent", 2, nil},
+		{"close of another child", [][]record{agentPair("spawn", "spawn_agent", "completed", childOne), agentPair("close", "close_agent", "completed", childTwo)}, "open_subagent", 2, nil},
+		{"close before spawn", [][]record{agentPair("close", "close_agent", "completed", childOne), agentPair("spawn", "spawn_agent", "completed", childOne)}, "open_subagent", 5, nil},
+		{"second child open", [][]record{agentPair("spawn-1", "spawn_agent", "completed", childOne), agentPair("spawn-2", "spawn_agent", "completed", childTwo), agentPair("close", "close_agent", "completed", childOne)}, "open_subagent", 5, nil},
+		{"two children closed", [][]record{agentPair("spawn-1", "spawn_agent", "completed", childOne), agentPair("spawn-2", "spawn_agent", "completed", childTwo), agentPair("close-1", "close_agent", "completed", childOne), agentPair("close-2", "close_agent", "completed", childTwo)}, "", 0, omitted("subagent threads (2)")},
+		{"resume reopens", [][]record{agentPair("spawn", "spawn_agent", "completed", childOne), agentPair("close", "close_agent", "completed", childOne), agentPair("resume", "resume_agent", "completed", childOne)}, "open_subagent", 8, nil},
+		{"resume closed again", [][]record{agentPair("spawn", "spawn_agent", "completed", childOne), agentPair("close", "close_agent", "completed", childOne), agentPair("resume", "resume_agent", "completed", childOne), agentPair("close-again", "close_agent", "completed", childOne)}, "", 0, omitted("subagent threads (1)")},
+		{"failed resume", [][]record{agentPair("spawn", "spawn_agent", "completed", childOne), agentPair("close", "close_agent", "completed", childOne), agentPair("resume", "resume_agent", "failed", childOne)}, "", 0, omitted("subagent threads (1)")},
+		// After a handoff the child is absent; native stale-ID calls fail.
+		{"stale calls after close", [][]record{agentPair("spawn", "spawn_agent", "completed", childOne), agentPair("close", "close_agent", "completed", childOne), agentPair("send", "send_input", "failed", childOne), agentPair("wait", "wait", "failed", childOne)}, "", 0, omitted("subagent threads (1)")},
+		// Argument errors return before the native client emits an item.
+		{"calls without items", [][]record{{agentFunction("wait", "wait_agent"), agentOutput("wait"), agentFunction("close", "close_agent"), agentOutput("close"), agentFunction("send", "send_input"), agentOutput("send")}}, "", 0, omitted()},
+		// Another tool provider may reuse the name outside the agent namespaces.
+		{"custom namespace spawn", [][]record{{{"response_item", map[string]any{"type": "function_call", "call_id": "spawn", "namespace": "mcp__agents", "name": "spawn_agent", "arguments": "{}"}}, agentOutput("spawn")}}, "", 0, omitted()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := inspect(t, parentRollout(t, tc.records...))
+			if tc.code == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(got.Omitted, tc.omitted) {
+					t.Fatalf("omissions: %v", got.Omitted)
+				}
+				return
+			}
+			assertRejection(t, err, tc.code)
+			if got.Rejections[0].Ordinal != tc.ordinal {
+				t.Fatalf("rejection ordinal = %d, want %d", got.Rejections[0].Ordinal, tc.ordinal)
+			}
+		})
+	}
+}
+
+func TestSubagentToolItemRejects(t *testing.T) {
+	spawn := func(mutate func(event, item map[string]any)) [][]record {
+		pair := agentPair("spawn", "spawn_agent", "completed", childOne)
+		item := agentItem("spawn", "spawn_agent", "completed", childOne)
+		mutate(item.payload, item.payload["item"].(map[string]any))
+		pair[1] = item
+		return [][]record{pair, agentPair("close", "close_agent", "completed", childOne)}
+	}
+	set := func(key string, value any) func(event, item map[string]any) {
+		return func(_, item map[string]any) { item[key] = value }
+	}
+	plain := map[string]any{"type": "function_call", "call_id": "spawn", "name": "spawn_agent", "arguments": "{}"}
+	for _, tc := range []struct {
+		name    string
+		records [][]record
+		code    string
+		ordinal uint64
+	}{
+		{"item started", [][]record{{agentFunction("spawn", "spawn_agent"), {"event_msg", map[string]any{"type": "item_started", "thread_id": testThread, "item": agentItem("spawn", "spawn_agent", "completed", childOne).payload["item"]}}}}, "subagent", 2},
+		{"in progress", spawn(set("status", "in_progress")), "subagent", 2},
+		{"interrupted", spawn(set("status", "interrupted")), "subagent", 2},
+		{"missing status", spawn(func(_, item map[string]any) { delete(item, "status") }), "subagent", 2},
+		{"v2 send_message", spawn(set("tool", "send_message")), "subagent", 2},
+		{"v2 followup_task", spawn(set("tool", "followup_task")), "subagent", 2},
+		{"v2 interrupt_agent", spawn(set("tool", "interrupt_agent")), "subagent", 2},
+		{"v2 list_agents", spawn(set("tool", "list_agents")), "subagent", 2},
+		{"unknown tool", spawn(set("tool", "future_tool")), "subagent", 2},
+		{"tool for another call", spawn(set("tool", "close_agent")), "subagent", 2},
+		{"another thread", spawn(func(event, _ map[string]any) { event["thread_id"] = otherThread }), "subagent", 2},
+		{"missing thread", spawn(func(event, _ map[string]any) { delete(event, "thread_id") }), "subagent", 2},
+		{"another sender", spawn(set("sender_thread_id", otherThread)), "subagent", 2},
+		{"unknown call", spawn(set("id", "other")), "subagent", 2},
+		{"null receivers", spawn(set("receiver_thread_ids", nil)), "subagent", 2},
+		{"scalar receivers", spawn(set("receiver_thread_ids", childOne)), "subagent", 2},
+		{"numeric receiver", spawn(set("receiver_thread_ids", []any{1})), "subagent", 2},
+		{"noncanonical receiver", spawn(set("receiver_thread_ids", []any{strings.ToUpper(childOne)})), "subagent", 2},
+		{"self receiver", spawn(set("receiver_thread_ids", []any{testThread})), "subagent", 2},
+		{"duplicate item", [][]record{{agentFunction("spawn", "spawn_agent"), agentItem("spawn", "spawn_agent", "completed", childOne), agentItem("spawn", "spawn_agent", "completed", childOne), agentOutput("spawn")}}, "subagent", 3},
+		{"item after output", [][]record{{agentFunction("wait", "wait_agent"), agentOutput("wait"), agentItem("wait", "wait", "completed", childOne)}}, "subagent", 3},
+		{"item without namespace", [][]record{{{"response_item", plain}, agentItem("spawn", "spawn_agent", "completed", childOne), agentOutput("spawn")}}, "subagent", 2},
+		{"item for custom namespace", [][]record{{{"response_item", map[string]any{"type": "function_call", "call_id": "spawn", "namespace": "mcp__agents", "name": "spawn_agent", "arguments": "{}"}}, agentItem("spawn", "spawn_agent", "completed", childOne), agentOutput("spawn")}}, "subagent", 2},
+		{"spawn without item", [][]record{{agentFunction("spawn", "spawn_agent"), agentOutput("spawn")}}, "subagent", 1},
+		{"resume without item", [][]record{{agentFunction("resume", "resume_agent"), agentOutput("resume")}}, "subagent", 1},
+		{"plain spawn without item", [][]record{{{"response_item", plain}, agentOutput("spawn")}}, "subagent", 1},
+		{"compacted before output", [][]record{{agentFunction("spawn", "spawn_agent"), agentItem("spawn", "spawn_agent", "completed", childOne), {"compacted", map[string]any{"message": "summary", "replacement_history": []any{}, "window_number": 1}}}}, "subagent", 1},
+		{"compacted call without item", [][]record{{agentFunction("wait", "wait_agent"), {"compacted", map[string]any{"message": "summary", "replacement_history": []any{}, "window_number": 1}}}}, "subagent", 1},
+		{"missing output", [][]record{{agentFunction("spawn", "spawn_agent"), agentItem("spawn", "spawn_agent", "completed", childOne)}}, "orphan_tool_call", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := inspect(t, parentRollout(t, tc.records...))
+			assertRejection(t, err, tc.code)
+			if got.Rejections[0].Ordinal != tc.ordinal {
+				t.Fatalf("rejection ordinal = %d, want %d", got.Rejections[0].Ordinal, tc.ordinal)
+			}
+		})
+	}
+	// Completed pairs may appear in replacement history after their lifecycle.
+	pairs := parentRollout(t, agentPair("spawn", "spawn_agent", "completed", childOne), agentPair("close", "close_agent", "completed", childOne))
+	replacement := []any{agentFunction("spawn", "spawn_agent").payload, agentOutput("spawn").payload, agentFunction("close", "close_agent").payload, agentOutput("close").payload}
+	if _, err := inspect(t, pairs+line(t, 7, "compacted", map[string]any{"message": "summary", "replacement_history": replacement, "window_number": 1})); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestExecCommandRequiresProcessCompletion(t *testing.T) {
 	call := map[string]any{"type": "function_call", "name": "exec_command", "call_id": "command", "arguments": "{}"}
 	output := map[string]any{"type": "function_call_output", "call_id": "command", "output": "process still running"}

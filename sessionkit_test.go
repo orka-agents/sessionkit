@@ -317,7 +317,7 @@ func TestPlanCannotBeAlteredAndVerifyDetectsDamage(t *testing.T) {
 }
 
 func TestGoldenInspectionAndPlan(t *testing.T) {
-	for _, name := range []string{"0.160.0/basic", "0.160.0/compacted", "0.162.1/basic", "0.162.1/compacted"} {
+	for _, name := range []string{"0.160.0/basic", "0.160.0/compacted", "0.160.0/subagent", "0.162.1/basic", "0.162.1/compacted", "0.162.1/subagent"} {
 		t.Run(name, func(t *testing.T) {
 			version, _, _ := strings.Cut(name, "/")
 			src, _, _ := testSourceName(t, name)

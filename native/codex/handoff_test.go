@@ -403,10 +403,12 @@ func TestFixtureBytes(t *testing.T) {
 		"0.160.0": {
 			"basic":     "3a56421c8af31a3c003bed3f8d10fce30f8df95b3f9b63288b9602fe74b00c4d",
 			"compacted": "f567be1bfe2bf86b50d5a360c266a86f0a6f37fb848ae8cb15bc5433d4750925",
+			"subagent":  "3d458d2a3fad526a5f98c34ae1702ab585280665dfaed63a524c2b50c0358a71",
 		},
 		"0.162.1": {
 			"basic":     "94c82b4750efb5c4aaed79e679ce8d4f9f3dfc97a85b9fabf64a7d8e028cb77e",
 			"compacted": "8e1f8f5b7f0ebfc988cb32745fcbce2854cf734272c219e336d94adfc6b4c695",
+			"subagent":  "098cb1c8bfa53e8b5fdba927aa7eeb78061fe5baee8feb45ee17999fd44ec734",
 		},
 	}[codexVersion] {
 		p := findRollout(t, filepath.Join("..", "..", "harness", "codex", "testdata", codexVersion, name))

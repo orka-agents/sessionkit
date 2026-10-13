@@ -20,6 +20,21 @@ func TestGenerateFixtures(t *testing.T) {
 	if os.Getenv("SESSIONKIT_UPDATE_FIXTURES") != "1" {
 		t.Skip("set SESSIONKIT_UPDATE_FIXTURES=1 only to regenerate pinned-client fixtures")
 	}
+	t.Run("handoff", generateHandoffFixtures)
+	t.Run("subagent", generateSubagentFixture)
+}
+
+// generateSubagentFixture keeps only the parent rollout. The child's own
+// rollout stays behind in the temporary home, as it does during a handoff.
+func generateSubagentFixture(t *testing.T) {
+	s := newStub(t)
+	home, cwd := tempDir(t), tempDir(t)
+	configHome(t, home, s)
+	_, _, path := spawnParent(t, s, home, cwd, true)
+	writeFixture(t, "subagent", read(t, path), cwd, path, home)
+}
+
+func generateHandoffFixtures(t *testing.T) {
 	s := newStub(t)
 	home := tempDir(t)
 	cwd := tempDir(t)
