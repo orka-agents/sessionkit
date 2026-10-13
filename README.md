@@ -5,10 +5,25 @@ workspaces. It captures one native rollout, installs identical bytes into an
 isolated Codex home, and reports how to resume its original UUID. It does not
 launch Codex, execute tools, move repository files, or copy a whole agent home.
 
-The first profile is `codex/paginated@0.160.0`, pinned to
-[Codex 0.160.0](https://github.com/openai/codex/tree/a956835d020762cb2b570053af06f643a11c0ecc).
-Layout is detected from the records and path, then the writer version is checked.
-Changing a version label does not make a legacy file supported.
+Each profile is pinned to one exact Codex release:
+
+| Profile | Constant | Writer and destination client |
+| --- | --- | --- |
+| `codex/paginated@0.160.0` | `CodexPaginated` | [Codex 0.160.0](https://github.com/openai/codex/tree/a956835d020762cb2b570053af06f643a11c0ecc) |
+| `codex/paginated@0.162.1` | `CodexPaginated162` | [Codex 0.162.1](https://github.com/openai/codex/tree/092d3acd6bec3e3a14bdc7e7a2810ab628ab759d) |
+
+Layout is detected from the records and path, then the recorded `cli_version`
+selects the profile. There is no fallback to the nearest release. Changing a
+version label does not make a legacy file supported.
+
+Both releases declare the same rollout, response-item, event, turn-item,
+abort-reason, and session-source enums, serde aliases, writer-lock protocol,
+and state database names, so both profiles apply the same validation rules.
+Codex 0.162.1 adds optional event fields, a `partial_answer` assistant phase,
+and persisted `additional_tools` items. It drops workspace roots from
+`turn_context` and stdout/stderr copies from command completions. SessionKit
+does not read any of those fields. A bundle installs only into the client
+release that wrote it.
 
 | Term | Meaning |
 | --- | --- |
@@ -20,7 +35,7 @@ Changing a version label does not make a legacy file supported.
 
 | Contract | Supported behavior |
 | --- | --- |
-| Source | `sessions/YYYY/MM/DD/rollout-<timestamp>-<UUIDv7>.jsonl`, with a single first `session_meta`, `history_mode: paginated`, and `cli_version: 0.160.0`. |
+| Source | `sessions/YYYY/MM/DD/rollout-<timestamp>-<UUIDv7>.jsonl`, with a single first `session_meta`, `history_mode: paginated`, and `cli_version` of exactly `0.160.0` or `0.162.1`. |
 | Records | Every record has a string timestamp and an unsigned integer ordinal, in non-decreasing order. Ordinal gaps are reported. |
 | Identity | Keep the source UUID. Refuse any matching filename under destination `sessions/` or `archived_sessions/`. |
 | Context | Preserve all bytes, opaque passive native records, function/custom tool calls/results, and complete compaction records. Reject types outside the pinned native enums, `Other` response items, request-only compaction triggers, incomplete compactions, and orphan tool calls or outputs in effective history, including replacement history. Provider file IDs and external media URLs are rejected; inline data URLs remain in the rollout. Local-shell and tool-search records are rejected until native validation is available. Non-null `encrypted_content` is rejected unless capture and destination both allow provider state; non-null `encrypted_function_args` is always rejected. |
@@ -32,7 +47,7 @@ Changing a version label does not make a legacy file supported.
 | Unsupported files | Legacy, compressed `.jsonl.zst`, archived sources, and multi-file lineage. |
 | Host | Linux and macOS, with Go 1.26 or later and a filesystem supporting `flock`, hard links, and directory fsync. |
 
-Use the pinned client for sessions intended to migrate. A state database must be
+Use a pinned client for sessions intended to migrate. A state database must be
 available when the source thread is created so Codex writes paginated history.
 Ephemeral or database-less sessions can write legacy history and are rejected.
 The destination starts in a fresh or isolated `CODEX_HOME`. Codex itself rebuilds
@@ -65,7 +80,7 @@ if err != nil {
 
 dst := sessionkit.Destination{
     Harness: sessionkit.Codex,
-    CLIVersion: "0.160.0", // checked against the caller's destination binary
+    CLIVersion: "0.162.1", // the caller's verified destination binary; must equal the bundle's source version
     Root: destinationHome,
     WorkingDir: destinationWorkspace,
     JournalDir: journalDir, // existing directory outside destinationHome and bundleDir
@@ -92,8 +107,9 @@ creates files with mode 0600 and directories with mode 0700, and leaves existing
 directory modes alone. The destination home and bundle must not overlap.
 Inspection changes only lock coordination files, never the rollout.
 The caller supplies the verified destination binary version in `CLIVersion`.
-Planning accepts only the tested `0.160.0` source/destination pair; SessionKit
-does not launch a binary to discover its version.
+Planning accepts only the tested same-release pairs, `0.160.0` into `0.160.0`
+and `0.162.1` into `0.162.1`, and `Install` rechecks the pair against the
+re-verified bundle. SessionKit does not launch a binary to discover its version.
 Verification also holds Codex's writer coordination and rejects an
 active writer. Planning performs no writes.
 
@@ -113,7 +129,7 @@ creation requires a separate coordination and publication contract.
 `Bundle.Manifest` is a verification snapshot. `PlanInstall` revalidates the files
 and `Install` checks the resulting plan's frozen digest before publication.
 Concurrent edits to bundle files require caller-owned coordination.
-Use the pinned client to produce native payloads. Rollout, response-item, and
+Use a pinned client to produce native payloads. Rollout, response-item, and
 event type tags are checked against the pinned profile. Hand-edited nested
 payloads require separate native schema validation.
 
@@ -218,10 +234,11 @@ kept reasoning and compaction items. The manifest records the counts and
 `Destination.AllowProviderState` is also set, and `Plan.ProviderState` repeats the
 counts for review.
 
-SessionKit neither interprets nor rewrites these bytes. The pinned client's
-[request construction](https://github.com/openai/codex/blob/a956835d020762cb2b570053af06f643a11c0ecc/codex-rs/core/src/client.rs#L940-L959)
-does not strip kept reasoning when the provider or model changes, and the native
-gate verifies that a kept reasoning item reaches the resumed request unchanged.
+SessionKit neither interprets nor rewrites these bytes. Neither pinned client's
+request construction ([0.160.0](https://github.com/openai/codex/blob/a956835d020762cb2b570053af06f643a11c0ecc/codex-rs/core/src/client.rs#L940-L959),
+[0.162.1](https://github.com/openai/codex/blob/092d3acd6bec3e3a14bdc7e7a2810ab628ab759d/codex-rs/core/src/client.rs#L942-L961))
+strips kept reasoning when the provider or model changes, and the native gate
+verifies that a kept reasoning item reaches the resumed request unchanged.
 Byte preservation does not prove that the destination provider accepts it;
 providers reject state they cannot decrypt. Allow it only when the destination
 path drops or accepts provider-bound content, for example through a proxy that
@@ -236,17 +253,25 @@ go test -race ./...
 
 The separate native gate requires `curl`, `tar`, a SHA-256 utility, and `sqlite3`
 for a read-only test assertion. Its installer downloads the exact native npm
-payload into a scratch prefix and verifies both archive and binary SHA-256:
+payload of one pinned release into a scratch prefix and verifies both archive
+and binary SHA-256. Run the gate once per release:
 
 ```sh
-export SESSIONKIT_CODEX_BIN="$(./scripts/install-codex.sh)"
-make native-gate
+for version in 0.160.0 0.162.1; do
+  SESSIONKIT_CODEX_BIN="$(./scripts/install-codex.sh "$version")" make native-gate
+done
 ```
 
-The gate fails if the variable is absent or the binary digest differs. It passed
-on Linux amd64 and macOS arm64. Linux arm64 and macOS amd64 digests are recorded,
-but those host gates have not been run. CI runs ordinary checks and native gates
-on Linux and macOS.
+The gate identifies the release by the binary digest and selects that release's
+fixtures and destination version. It fails if the variable is absent, the digest
+matches no pinned release for the host, or `codex --version` disagrees.
+
+| Release | Native gate passed on | Digests recorded, gate not run |
+| --- | --- | --- |
+| 0.160.0 | Linux amd64, macOS arm64 | Linux arm64, macOS amd64 |
+| 0.162.1 | Linux amd64, macOS arm64 | Linux arm64, macOS amd64 |
+
+CI runs ordinary checks, and native gates for both releases on Linux and macOS.
 
 The native tests use fresh homes, a fake API key, and a local scripted Responses
 provider. They verify original roles, ordering, multiplicity, tool arguments and

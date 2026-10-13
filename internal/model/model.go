@@ -10,7 +10,12 @@ type Harness string
 type Profile string
 
 const Codex Harness = "codex"
-const CodexPaginated Profile = "codex/paginated@0.160.0"
+
+// Each Codex profile names one exact writer release.
+const (
+	CodexPaginated    Profile = "codex/paginated@0.160.0"
+	CodexPaginated162 Profile = "codex/paginated@0.162.1"
+)
 
 type Source struct {
 	Harness  Harness

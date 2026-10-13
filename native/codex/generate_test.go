@@ -89,7 +89,7 @@ func writeFixture(t *testing.T, name string, b []byte, cwd, path, home string) {
 	}
 	rel, err := filepath.Rel(home, path)
 	must(t, err)
-	dir := filepath.Join("..", "..", "harness", "codex", "testdata", name)
+	dir := filepath.Join("..", "..", "harness", "codex", "testdata", codexVersion, name)
 	previous, err := filepath.Glob(filepath.Join(dir, "sessions", "*", "*", "*", "rollout-*.jsonl"))
 	must(t, err)
 	for _, previousPath := range previous {

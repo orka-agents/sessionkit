@@ -12,7 +12,8 @@ import (
 	"testing"
 )
 
-// These event shapes follow Codex a956835d core/tests/common/responses.rs.
+// These event shapes follow core/tests/common/responses.rs at Codex a956835d
+// and 092d3acd.
 // Only a fixed echo command is executed while generating fixtures.
 type responseTurn struct {
 	items   []map[string]any

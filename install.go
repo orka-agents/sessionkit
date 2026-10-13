@@ -121,6 +121,9 @@ func install(ctx context.Context, p Plan, hook installHook) (Receipt, error) {
 	if err = checkProviderState(checked.Manifest, p.destination); err != nil {
 		return failBeforePublication(err)
 	}
+	if err = checkClientVersion(checked.Manifest, p.destination); err != nil {
+		return failBeforePublication(err)
+	}
 	if state.Phase == "planned" {
 		if err = collision(root, p.ThreadID, "", b); err != nil {
 			return receipt, err

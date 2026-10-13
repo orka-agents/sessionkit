@@ -215,7 +215,7 @@ func TestNativeLegacyRejectedBeforeClient(t *testing.T) {
 
 func fixtureHome(t *testing.T, name string, s *stubProvider) (home, cwd, path string, b []byte, id string) {
 	t.Helper()
-	fixtureRoot := filepath.Join("..", "..", "harness", "codex", "testdata", name)
+	fixtureRoot := filepath.Join("..", "..", "harness", "codex", "testdata", codexVersion, name)
 	originalPath := findRollout(t, fixtureRoot)
 	b = read(t, originalPath)
 	rel, err := filepath.Rel(fixtureRoot, originalPath)
@@ -230,7 +230,7 @@ func fixtureHome(t *testing.T, name string, s *stubProvider) (home, cwd, path st
 }
 
 func destination(t *testing.T, home, cwd string) sessionkit.Destination {
-	return sessionkit.Destination{Harness: sessionkit.Codex, CLIVersion: "0.160.0", Root: home, WorkingDir: cwd, JournalDir: tempDir(t)}
+	return sessionkit.Destination{Harness: sessionkit.Codex, CLIVersion: codexVersion, Root: home, WorkingDir: cwd, JournalDir: tempDir(t)}
 }
 
 func installBundle(t *testing.T, b sessionkit.Bundle, d sessionkit.Destination) (sessionkit.Plan, string) {
@@ -331,7 +331,7 @@ func assertAppended(t *testing.T, b, original []byte, reply, cwd string, setting
 	prior := decodeLines(t, original)
 	last := prior[len(prior)-1]["ordinal"].(float64)
 	appended := decodeLines(t, b[len(original):])
-	sawReply, sawContext, sawSettings := false, false, false
+	sawReply, sawContext, sawSettings, sawRoots := false, false, false, false
 	for _, line := range appended {
 		ordinal, ok := line["ordinal"].(float64)
 		if !ok || ordinal <= last {
@@ -343,8 +343,21 @@ func assertAppended(t *testing.T, b, original []byte, reply, cwd string, setting
 			sawReply = true
 		}
 		sandbox, _ := p["sandbox_policy"].(map[string]any)
-		if line["type"] == "turn_context" && p["cwd"] == cwd && p["approval_policy"] == "never" && p["approvals_reviewer"] == "user" && sandbox["type"] == "danger-full-access" && reflect.DeepEqual(p["workspace_roots"], []any{cwd}) {
+		if line["type"] == "turn_context" && p["cwd"] == cwd && p["approval_policy"] == "never" && p["approvals_reviewer"] == "user" && sandbox["type"] == "danger-full-access" {
 			sawContext = true
+			// Codex 0.160.0 records the effective roots in turn_context; 0.162.1
+			// dropped that field and renders them in world_state instead.
+			if codexVersion == "0.160.0" {
+				sawRoots = sawRoots || reflect.DeepEqual(p["workspace_roots"], []any{cwd})
+			} else if _, present := p["workspace_roots"]; present {
+				t.Fatal("turn_context unexpectedly records workspace roots")
+			}
+		}
+		if line["type"] == "world_state" && codexVersion != "0.160.0" {
+			state, _ := p["state"].(map[string]any)
+			environments, _ := state["environments"].(map[string]any)
+			filesystem, _ := environments["filesystem"].(string)
+			sawRoots = sawRoots || strings.Contains(filesystem, "<workspace_roots><root>"+cwd+"</root></workspace_roots>")
 		}
 		if p["type"] == "thread_settings_applied" {
 			settings, _ := p["thread_settings"].(map[string]any)
@@ -354,8 +367,8 @@ func assertAppended(t *testing.T, b, original []byte, reply, cwd string, setting
 			}
 		}
 	}
-	if !sawReply || !sawContext || settingsRequired && !sawSettings {
-		t.Fatalf("missing appended native data: reply=%v context=%v settings=%v", sawReply, sawContext, sawSettings)
+	if !sawReply || !sawContext || !sawRoots || settingsRequired && !sawSettings {
+		t.Fatalf("missing appended native data: reply=%v context=%v roots=%v settings=%v", sawReply, sawContext, sawRoots, sawSettings)
 	}
 }
 
@@ -386,11 +399,17 @@ func assertContains(t *testing.T, v any, s string) {
 
 // Keep a fixture checksum assertion independent of the bundle implementation.
 func TestFixtureBytes(t *testing.T) {
-	for name, expected := range map[string]string{
-		"basic":     "3a56421c8af31a3c003bed3f8d10fce30f8df95b3f9b63288b9602fe74b00c4d",
-		"compacted": "f567be1bfe2bf86b50d5a360c266a86f0a6f37fb848ae8cb15bc5433d4750925",
-	} {
-		p := findRollout(t, filepath.Join("..", "..", "harness", "codex", "testdata", name))
+	for name, expected := range map[string]map[string]string{
+		"0.160.0": {
+			"basic":     "3a56421c8af31a3c003bed3f8d10fce30f8df95b3f9b63288b9602fe74b00c4d",
+			"compacted": "f567be1bfe2bf86b50d5a360c266a86f0a6f37fb848ae8cb15bc5433d4750925",
+		},
+		"0.162.1": {
+			"basic":     "94c82b4750efb5c4aaed79e679ce8d4f9f3dfc97a85b9fabf64a7d8e028cb77e",
+			"compacted": "8e1f8f5b7f0ebfc988cb32745fcbce2854cf734272c219e336d94adfc6b4c695",
+		},
+	}[codexVersion] {
+		p := findRollout(t, filepath.Join("..", "..", "harness", "codex", "testdata", codexVersion, name))
 		b := read(t, p)
 		if !bytes.HasSuffix(b, []byte{'\n'}) {
 			t.Fatal("fixture has incomplete final line")

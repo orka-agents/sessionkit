@@ -1,0 +1,53 @@
+{
+  "profile": "codex/paginated@0.162.1",
+  "threadID": "01a133e8-8737-7d20-99e9-a145bc2e9f5d",
+  "cliVersion": "0.162.1",
+  "historyMode": "paginated",
+  "recordedCWD": "/sessionkit/source-workspace",
+  "latestCWD": "/sessionkit/source-workspace",
+  "runtimeWorkspaceRoots": [
+    "/sessionkit/source-workspace"
+  ],
+  "modelProvider": "stub",
+  "records": {
+    "total": 31,
+    "byType": {
+      "compacted": 1,
+      "event_msg": 15,
+      "response_item": 7,
+      "session_meta": 1,
+      "token_usage_record": 3,
+      "turn_context": 2,
+      "world_state": 2
+    },
+    "responseItems": {
+      "function_call": 1,
+      "function_call_output": 1,
+      "message": 5
+    },
+    "firstOrdinal": 0,
+    "lastOrdinal": 30,
+    "ordinalGaps": 0,
+    "toolCalls": 1,
+    "toolOutputs": 1,
+    "toolPairs": 1
+  },
+  "compaction": {
+    "count": 1,
+    "newestComplete": true,
+    "newestCompleteBoundaryOrdinal": 24
+  },
+  "providerState": {
+    "reasoningItems": 0,
+    "compactionItems": 0
+  },
+  "omitted": [
+    "thread name",
+    "git metadata",
+    "memory mode"
+  ],
+  "warnings": null,
+  "rejections": null,
+  "sourceDigest": "8e1f8f5b7f0ebfc988cb32745fcbce2854cf734272c219e336d94adfc6b4c695",
+  "sourceSizeBytes": 33158
+}

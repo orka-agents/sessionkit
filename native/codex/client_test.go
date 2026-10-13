@@ -23,10 +23,30 @@ import (
 
 var codexBinary string
 
+// codexVersion is the pinned release whose binary digest SESSIONKIT_CODEX_BIN
+// matched. It selects fixtures and the destination version.
+var codexVersion string
+
+// pinnedBinaries holds the native npm binary digests of each pinned release.
+var pinnedBinaries = map[string]map[string]string{
+	"0.160.0": {
+		"linux/amd64":  "12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad",
+		"linux/arm64":  "50b06603bdcdac39b714f5c3e68583c002b8ad8779ebfdaaf4932ff016b379c0",
+		"darwin/amd64": "5383ef71dd1bd8d2f3658c04a219e2cf165c7969aebd0cceced1bc9f0f68877f",
+		"darwin/arm64": "112fae7a5a1223e673c8a1791d32338f37df8b527ff1159bb8adac6c4dbf1b4b",
+	},
+	"0.162.1": {
+		"linux/amd64":  "628e35487d888a28f0427fc37501da529dd3d81fcbad7a2c3421c1e8670d92e1",
+		"linux/arm64":  "071cbe8d821cf1b02b6d8ba6c8b7991b228fcb8519dcb68a37d31222bb8cabe5",
+		"darwin/amd64": "f86b8cfd3de94dc70763d251da3ff292e94f4a53ad41b81faab3619a7bcb626c",
+		"darwin/arm64": "74c6a6d263f40d65f99c27a815275f5b4ed0bcc2baecc396b4cf3255498bdfc0",
+	},
+}
+
 func TestMain(m *testing.M) {
 	codexBinary = os.Getenv("SESSIONKIT_CODEX_BIN")
 	if codexBinary == "" {
-		fmt.Fprintln(os.Stderr, "SESSIONKIT_CODEX_BIN is required; run scripts/install-codex.sh")
+		fmt.Fprintln(os.Stderr, "SESSIONKIT_CODEX_BIN is required; run scripts/install-codex.sh <version>")
 		os.Exit(1)
 	}
 	resolved, err := filepath.Abs(codexBinary)
@@ -38,12 +58,6 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	codexBinary = resolved
-	want := map[string]string{
-		"linux/amd64":  "12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad",
-		"linux/arm64":  "50b06603bdcdac39b714f5c3e68583c002b8ad8779ebfdaaf4932ff016b379c0",
-		"darwin/amd64": "5383ef71dd1bd8d2f3658c04a219e2cf165c7969aebd0cceced1bc9f0f68877f",
-		"darwin/arm64": "112fae7a5a1223e673c8a1791d32338f37df8b527ff1159bb8adac6c4dbf1b4b",
-	}[runtime.GOOS+"/"+runtime.GOARCH]
 	f, err := os.Open(codexBinary)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -52,10 +66,23 @@ func TestMain(m *testing.M) {
 	h := sha256.New()
 	_, err = io.Copy(h, f)
 	_ = f.Close()
-	if err != nil || want == "" || hex.EncodeToString(h.Sum(nil)) != want {
-		fmt.Fprintln(os.Stderr, "SESSIONKIT_CODEX_BIN digest does not match pinned Codex 0.160.0 for this platform")
+	if err == nil {
+		got := hex.EncodeToString(h.Sum(nil))
+		for version, digests := range pinnedBinaries {
+			if digests[runtime.GOOS+"/"+runtime.GOARCH] == got {
+				codexVersion = version
+			}
+		}
+	}
+	if codexVersion == "" {
+		fmt.Fprintln(os.Stderr, "SESSIONKIT_CODEX_BIN digest does not match a pinned Codex release for this platform")
 		os.Exit(1)
 	}
+	if out, err := exec.Command(codexBinary, "--version").Output(); err != nil || strings.TrimSpace(string(out)) != "codex-cli "+codexVersion {
+		fmt.Fprintf(os.Stderr, "SESSIONKIT_CODEX_BIN does not report Codex %s: %v\n", codexVersion, err)
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "native gate: Codex %s %s/%s\n", codexVersion, runtime.GOOS, runtime.GOARCH)
 	os.Exit(m.Run())
 }
 

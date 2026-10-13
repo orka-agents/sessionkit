@@ -420,8 +420,8 @@ func validateDestination(dst Destination) error {
 	if _, err := adapterFor(dst.Harness); err != nil {
 		return err
 	}
-	if dst.CLIVersion != codex.CLIVersion {
-		return reject("cli_version", "destination CLI version must be the supported "+codex.CLIVersion)
+	if _, ok := codex.ProfileFor(dst.CLIVersion); !ok {
+		return reject("cli_version", "destination CLI version must be a supported Codex release")
 	}
 	workspace, err := fsx.OpenRoot(dst.WorkingDir)
 	if err != nil {
@@ -511,6 +511,9 @@ func PlanInstall(ctx context.Context, bundle Bundle, dst Destination) (Plan, err
 	if err = validateDestination(dst); err != nil {
 		return empty, err
 	}
+	if err = checkClientVersion(checked.Manifest, dst); err != nil {
+		return empty, err
+	}
 	journalRoot, err := fsx.OpenRoot(dst.JournalDir)
 	if err != nil {
 		return empty, err
@@ -563,6 +566,15 @@ func PlanInstall(ctx context.Context, bundle Bundle, dst Destination) (Plan, err
 func checkProviderState(m Manifest, dst Destination) error {
 	if m.ProviderState.Present() && !dst.AllowProviderState {
 		return reject("provider_state", "bundle contains provider-bound encrypted content; the destination must allow provider state")
+	}
+	return nil
+}
+
+// checkClientVersion pairs a bundle only with its own writer release. Native
+// evidence covers no cross-version pair.
+func checkClientVersion(m Manifest, dst Destination) error {
+	if dst.CLIVersion != m.SourceCLIVersion {
+		return reject("cli_version", "destination CLI version must match the bundle's source CLI version")
 	}
 	return nil
 }

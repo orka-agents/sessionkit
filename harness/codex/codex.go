@@ -1,5 +1,6 @@
 // Package codex inspects byte-preserving Codex paginated rollouts. The supported
-// wire shapes are pinned to rust-v0.160.0, commit a956835d020762cb2b570053af06f643a11c0ecc.
+// wire shapes are pinned to rust-v0.160.0, commit a956835d020762cb2b570053af06f643a11c0ecc,
+// and rust-v0.162.1, commit 092d3acd6bec3e3a14bdc7e7a2810ab628ab759d.
 package codex
 
 import (
@@ -26,7 +27,21 @@ import (
 )
 
 const AdapterVersion = "1"
-const CLIVersion = "0.160.0"
+
+// profiles maps each pinned writer release to its exact profile. Both releases
+// declare identical rollout, response-item, event, turn-item, abort-reason, and
+// session-source enums, so one validator serves both. A new release needs its
+// own enum diff, fixtures, and native gate before it is listed here.
+var profiles = map[string]model.Profile{
+	"0.160.0": model.CodexPaginated,
+	"0.162.1": model.CodexPaginated162,
+}
+
+// ProfileFor returns the profile pinned to an exact Codex CLI version.
+func ProfileFor(version string) (model.Profile, bool) {
+	profile, ok := profiles[version]
+	return profile, ok
+}
 
 type Adapter struct{}
 
@@ -134,7 +149,7 @@ func (Adapter) Layout(inspection model.Inspection, relative string) (string, err
 	if err != nil {
 		return "", err
 	}
-	if inspection.Profile != model.CodexPaginated {
+	if profile, ok := ProfileFor(inspection.CLIVersion); !ok || inspection.Profile != profile {
 		return "", reject(relative, "profile", "unsupported Codex profile", 0)
 	}
 	if id != inspection.ThreadID {
@@ -160,7 +175,7 @@ type toolCall struct {
 }
 
 func (Adapter) Inspect(ctx context.Context, input io.Reader, relative string, allowProviderState bool, tracker *budget.Tracker) (model.Inspection, error) {
-	inspection := model.Inspection{Profile: model.CodexPaginated, Omitted: []string{"thread name", "git metadata", "memory mode"}, Records: model.RecordSummary{ByType: map[string]int64{}, ResponseItems: map[string]int64{}}}
+	inspection := model.Inspection{Omitted: []string{"thread name", "git metadata", "memory mode"}, Records: model.RecordSummary{ByType: map[string]int64{}, ResponseItems: map[string]int64{}}}
 	// A nil summary rejects every non-null encrypted_content.
 	var kept *model.ProviderStateSummary
 	if allowProviderState {
@@ -640,7 +655,8 @@ func toolOutput(value any, tracker *budget.Tracker) (bool, error) {
 
 // supportedEventKind checks only the enum tag, not each variant's nested schema.
 // Pinned to Codex a956835d020762cb2b570053af06f643a11c0ecc,
-// codex-rs/protocol/src/protocol.rs EventMsg, including serde aliases.
+// codex-rs/protocol/src/protocol.rs EventMsg, including serde aliases. The enum
+// is unchanged at 092d3acd6bec3e3a14bdc7e7a2810ab628ab759d.
 // Collaboration and subagent events are rejected separately.
 func supportedEventKind(kind string) bool {
 	switch kind {
@@ -733,9 +749,12 @@ func metadata(out *model.Inspection, payload map[string]any, component string, o
 		return bad("cli_version", "session metadata must name its CLI version")
 	}
 	out.CLIVersion = version
-	if version != CLIVersion {
-		return bad("cli_version", "only Codex CLI 0.160.0 is supported")
+	profile, ok := ProfileFor(version)
+	if !ok {
+		return bad("cli_version", "only Codex CLI 0.160.0 and 0.162.1 are supported")
 	}
+	// The recorded writer version selects the profile; there is no fallback.
+	out.Profile = profile
 	mode, ok := payload["history_mode"].(string)
 	if !ok || mode != "paginated" {
 		return bad("history_mode", "only paginated history is supported")

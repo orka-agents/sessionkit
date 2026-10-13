@@ -109,6 +109,46 @@ func TestInspectionPreservesNumbersAndSummarizesOwnedSettings(t *testing.T) {
 	}
 }
 
+func TestRecordedVersionSelectsProfile(t *testing.T) {
+	for version, profile := range map[string]model.Profile{"0.160.0": model.CodexPaginated, "0.162.1": model.CodexPaginated162} {
+		t.Run(version, func(t *testing.T) {
+			metadata := meta()
+			metadata["cli_version"] = version
+			got, err := inspect(t, line(t, 0, "session_meta", metadata))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Profile != profile || got.CLIVersion != version {
+				t.Fatalf("profile: %s %s", got.Profile, got.CLIVersion)
+			}
+			if _, err := (Adapter{}).Layout(got, testPath); err != nil {
+				t.Fatal(err)
+			}
+			// A manifest cannot pair one release's records with another profile.
+			for _, other := range []model.Profile{model.CodexPaginated, model.CodexPaginated162, "codex/paginated@0.161.0"} {
+				if other == profile {
+					continue
+				}
+				mismatched := got
+				mismatched.Profile = other
+				_, err := (Adapter{}).Layout(mismatched, testPath)
+				assertRejection(t, err, "profile")
+			}
+		})
+	}
+	for _, version := range []string{"0.161.0", "0.162.0", "0.162.2", "0.163.0", "v0.162.1", "0.162.1-alpha.1"} {
+		t.Run(version, func(t *testing.T) {
+			metadata := meta()
+			metadata["cli_version"] = version
+			got, err := inspect(t, line(t, 0, "session_meta", metadata))
+			assertRejection(t, err, "cli_version")
+			if got.Profile != "" {
+				t.Fatalf("unpinned version selected profile %s", got.Profile)
+			}
+		})
+	}
+}
+
 func TestCustomThreadSourcesPreserveCase(t *testing.T) {
 	for _, source := range []string{"Guardian_Review", "Memory_Consolidation", "SUBAGENT"} {
 		t.Run(source, func(t *testing.T) {

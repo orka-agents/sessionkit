@@ -1,21 +1,26 @@
 # Native Codex gate
 
-The gate runs the actual Codex 0.160.0 client against a local scripted Responses
-provider. Each client receives a private `HOME` and `CODEX_HOME`, a fake API key,
-and an explicit provider configuration. No production provider is contacted.
+The gate runs an actual pinned Codex client, 0.160.0 or 0.162.1, against a local
+scripted Responses provider. Each client receives a private `HOME` and
+`CODEX_HOME`, a fake API key, and an explicit provider configuration. No
+production provider is contacted. Run it once per release:
 
 ```sh
-export SESSIONKIT_CODEX_BIN="$(./scripts/install-codex.sh)"
+export SESSIONKIT_CODEX_BIN="$(./scripts/install-codex.sh 0.162.1)"
 make native-gate
 ```
 
 Go, `curl`, `tar`, a SHA-256 utility, and the `sqlite3` CLI must be installed.
-The installer fetches the native payload from the exact platform package of
-`@openai/codex@0.160.0` into a new scratch prefix. It verifies both the npm archive
-and the extracted binary before printing the binary path. An optional first
-argument selects a new, nonexistent prefix. Keep or delete that prefix after use.
-The gate independently hashes the binary. Both an absent binary and a mismatched
-digest are failures, including when `go test -tags=native` is invoked directly.
+The installer's required first argument names the release. It fetches the native
+payload from the exact platform package of `@openai/codex@<release>` into a new
+scratch prefix and verifies both the npm archive and the extracted binary before
+printing the binary path. An optional second argument selects a new, nonexistent
+prefix. Keep or delete that prefix after use. The gate independently hashes the
+binary and selects the release whose pinned digest for this platform it matches.
+That release chooses the fixtures under `harness/codex/testdata/<release>` and
+the destination `CLIVersion`. An absent binary, a digest that matches no pinned
+release, and a `codex --version` mismatch are failures, including when
+`go test -tags=native` is invoked directly.
 
 The scripted tool call only prints a fixed nonce. The gate uses
 `--dangerously-bypass-approvals-and-sandbox` for `exec`, and explicit `never` /
@@ -28,7 +33,10 @@ B, and installs and resumes C beside workspace A. It checks the original role
 order and multiplicity, tool name, call ID, arguments and output. It also checks
 unchanged rollout prefixes, increasing ordinals, appended workspace and permission
 settings, and native creation of the paginated SQLite row. SQLite is opened only
-by the read-only CLI in this test, never by the library.
+by the read-only CLI in this test, never by the library. Codex 0.160.0 records the
+appended workspace roots in `turn_context`. Codex 0.162.1 omits that field, so its
+gate requires the field's absence and finds the roots in the appended
+`world_state` filesystem context.
 
 `exec resume` cannot return the effective configuration or accept an explicit
 `runtimeWorkspaceRoots` parameter. The first destination resume therefore uses
@@ -82,23 +90,28 @@ parser tests only; the scripted provider does not produce remote compactions.
 Run just these cases with the same digest gate:
 
 ```sh
-SESSIONKIT_CODEX_BIN="$(./scripts/install-codex.sh)" \
+SESSIONKIT_CODEX_BIN="$(./scripts/install-codex.sh 0.162.1)" \
   go test -count=1 -tags=native -timeout=3m ./native/codex \
   -run 'TestNative(InterruptedHandoff|KilledTurnRejected|ProviderStateHandoff)$' -v
 ```
 
-The client source is pinned to
-[`a956835d020762cb2b570053af06f643a11c0ecc`](https://github.com/openai/codex/tree/a956835d020762cb2b570053af06f643a11c0ecc).
-The SSE events follow `codex-rs/core/tests/common/responses.rs`; app-server
-parameters follow `codex-rs/app-server-protocol/src/protocol/v2/thread.rs`
-and `turn.rs`.
+The client sources are pinned to
+[`a956835d020762cb2b570053af06f643a11c0ecc`](https://github.com/openai/codex/tree/a956835d020762cb2b570053af06f643a11c0ecc)
+for 0.160.0 and
+[`092d3acd6bec3e3a14bdc7e7a2810ab628ab759d`](https://github.com/openai/codex/tree/092d3acd6bec3e3a14bdc7e7a2810ab628ab759d)
+for 0.162.1. The SSE events follow `codex-rs/core/tests/common/responses.rs`;
+app-server parameters follow `codex-rs/app-server-protocol/src/protocol/v2/thread.rs`
+and `turn.rs`. The event shapes and thread parameters used here are unchanged
+between the releases; `turn/start` gains only optional turn-attribution fields.
 
-The npm artifacts were downloaded and hashed on 2026-10-02. These are binary
-digests; the corresponding archive digests are also pinned in the installer.
+The 0.160.0 npm artifacts were downloaded and hashed on 2026-10-02, and the
+0.162.1 artifacts on 2026-10-12. Each 0.162.1 archive also matched the `sha512`
+integrity in its npm registry metadata before hashing. These are binary digests;
+the corresponding archive digests are also pinned in the installer.
 
-| Platform | Binary SHA-256 |
-| --- | --- |
-| Linux x64 | `12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad` |
-| Linux arm64 | `50b06603bdcdac39b714f5c3e68583c002b8ad8779ebfdaaf4932ff016b379c0` |
-| macOS x64 | `5383ef71dd1bd8d2f3658c04a219e2cf165c7969aebd0cceced1bc9f0f68877f` |
-| macOS arm64 | `112fae7a5a1223e673c8a1791d32338f37df8b527ff1159bb8adac6c4dbf1b4b` |
+| Platform | 0.160.0 binary SHA-256 | 0.162.1 binary SHA-256 |
+| --- | --- | --- |
+| Linux x64 | `12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad` | `628e35487d888a28f0427fc37501da529dd3d81fcbad7a2c3421c1e8670d92e1` |
+| Linux arm64 | `50b06603bdcdac39b714f5c3e68583c002b8ad8779ebfdaaf4932ff016b379c0` | `071cbe8d821cf1b02b6d8ba6c8b7991b228fcb8519dcb68a37d31222bb8cabe5` |
+| macOS x64 | `5383ef71dd1bd8d2f3658c04a219e2cf165c7969aebd0cceced1bc9f0f68877f` | `f86b8cfd3de94dc70763d251da3ff292e94f4a53ad41b81faab3619a7bcb626c` |
+| macOS arm64 | `112fae7a5a1223e673c8a1791d32338f37df8b527ff1159bb8adac6c4dbf1b4b` | `74c6a6d263f40d65f99c27a815275f5b4ed0bcc2baecc396b4cf3255498bdfc0` |

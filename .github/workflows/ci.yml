@@ -22,6 +22,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
+        codex: ["0.160.0", "0.162.1"]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -31,7 +32,9 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Install pinned native client
-        run: echo "SESSIONKIT_CODEX_BIN=$(./scripts/install-codex.sh)" >> "$GITHUB_ENV"
+        env:
+          CODEX_VERSION: ${{ matrix.codex }}
+        run: echo "SESSIONKIT_CODEX_BIN=$(./scripts/install-codex.sh "$CODEX_VERSION")" >> "$GITHUB_ENV"
       - name: Install SQLite read-only test dependency
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y sqlite3

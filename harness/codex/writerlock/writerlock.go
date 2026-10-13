@@ -1,5 +1,6 @@
-// Package writerlock uses Codex 0.160.0's flock namespace. Lock paths and the
-// coordination protocol follow codex-rs/rollout/src/writer_lock.rs at a956835d.
+// Package writerlock uses the flock namespace of Codex 0.160.0 and 0.162.1. Lock
+// paths and the coordination protocol follow codex-rs/rollout/src/writer_lock.rs,
+// which is identical at a956835d and 092d3acd.
 package writerlock
 
 import (

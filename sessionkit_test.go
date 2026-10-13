@@ -27,7 +27,7 @@ func tempDir(t *testing.T) string {
 }
 
 func testSource(t *testing.T) (Source, string, []byte) {
-	return testSourceName(t, "basic")
+	return testSourceName(t, "0.160.0/basic")
 }
 
 func testSourceName(t *testing.T, name string) (Source, string, []byte) {
@@ -317,8 +317,9 @@ func TestPlanCannotBeAlteredAndVerifyDetectsDamage(t *testing.T) {
 }
 
 func TestGoldenInspectionAndPlan(t *testing.T) {
-	for _, name := range []string{"basic", "compacted"} {
+	for _, name := range []string{"0.160.0/basic", "0.160.0/compacted", "0.162.1/basic", "0.162.1/compacted"} {
 		t.Run(name, func(t *testing.T) {
+			version, _, _ := strings.Cut(name, "/")
 			src, _, _ := testSourceName(t, name)
 			in, err := Inspect(context.Background(), src, Budget{})
 			if err != nil {
@@ -329,7 +330,9 @@ func TestGoldenInspectionAndPlan(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			plan, err := PlanInstall(context.Background(), bundle, testDestination(t))
+			dst := testDestination(t)
+			dst.CLIVersion = version
+			plan, err := PlanInstall(context.Background(), bundle, dst)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -337,7 +340,7 @@ func TestGoldenInspectionAndPlan(t *testing.T) {
 			plan.BundleDigest = "<manifest-sha256>"
 			plan.seal = "<plan-sha256>"
 			plan.bundleDir = "/sessionkit/bundle"
-			plan.destination = Destination{Harness: Codex, CLIVersion: "0.160.0", Root: "/sessionkit/destination-home", WorkingDir: "/sessionkit/destination-workspace", JournalDir: "/sessionkit/journal"}
+			plan.destination = Destination{Harness: Codex, CLIVersion: version, Root: "/sessionkit/destination-home", WorkingDir: "/sessionkit/destination-workspace", JournalDir: "/sessionkit/journal"}
 			plan.ResumeHints.CodexHome = plan.destination.Root
 			plan.ResumeHints.CWDOverride = plan.destination.WorkingDir
 			plan.ResumeHints.RuntimeWorkspaceRoots = []string{plan.destination.WorkingDir}
@@ -436,12 +439,28 @@ func TestInspectTimeoutUsesBudgetError(t *testing.T) {
 }
 
 func TestDestinationVersionIsRequired(t *testing.T) {
-	_, bundle, _, _ := testBundle(t)
-	for _, version := range []string{"", "0.159.1", "0.160.1"} {
-		t.Run(version, func(t *testing.T) {
+	_, older, _, _ := testBundle(t)
+	src, _, _ := testSourceName(t, "0.162.1/basic")
+	newer, err := Capture(context.Background(), src, CaptureOptions{BundleDir: filepath.Join(tempDir(t), "bundle")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if older.Manifest.Profile != CodexPaginated || newer.Manifest.Profile != CodexPaginated162 || newer.Manifest.SourceCLIVersion != "0.162.1" {
+		t.Fatalf("recorded writer version did not select the profile: %s %s", older.Manifest.Profile, newer.Manifest.Profile)
+	}
+	// Each profile pairs only with its own client; cross-version pairs have no
+	// native evidence.
+	for _, tc := range []struct {
+		bundle  Bundle
+		version string
+	}{
+		{older, ""}, {older, "0.159.1"}, {older, "0.160.1"}, {older, "0.162.1"},
+		{newer, "0.160.0"}, {newer, "0.162.0"}, {newer, "0.163.0"},
+	} {
+		t.Run(string(tc.bundle.Manifest.Profile)+"/"+tc.version, func(t *testing.T) {
 			dst := testDestination(t)
-			dst.CLIVersion = version
-			_, err := PlanInstall(context.Background(), bundle, dst)
+			dst.CLIVersion = tc.version
+			_, err := PlanInstall(context.Background(), tc.bundle, dst)
 			var rejected *RejectionError
 			if !errors.As(err, &rejected) || len(rejected.Rejections) != 1 || rejected.Rejections[0].Code != "cli_version" {
 				t.Fatalf("unsupported destination version accepted: %v", err)
@@ -453,6 +472,29 @@ func TestDestinationVersionIsRequired(t *testing.T) {
 				}
 			}
 		})
+	}
+	// Install rechecks the pair against the re-verified bundle, so editing a
+	// persisted plan's destination version cannot publish a cross-version pair.
+	dst := testDestination(t)
+	plan, err := PlanInstall(context.Background(), older, dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var edited Plan
+	if err = json.Unmarshal(bytes.Replace(raw, []byte(`"cliVersion":"0.160.0"`), []byte(`"cliVersion":"0.162.1"`), 1), &edited); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := Install(context.Background(), edited)
+	var rejected *RejectionError
+	if !errors.As(err, &rejected) || rejected.Rejections[0].Code != "cli_version" || receipt.Outcome != RejectedBeforeMutation {
+		t.Fatalf("install accepted a cross-version plan: %+v %v", receipt, err)
+	}
+	if entries, err := os.ReadDir(dst.Root); err != nil || len(entries) != 0 {
+		t.Fatalf("cross-version install changed destination: %v %v", entries, err)
 	}
 }
 

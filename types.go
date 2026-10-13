@@ -14,7 +14,11 @@ type Harness = model.Harness
 type Profile = model.Profile
 
 const Codex = model.Codex
+
+// CodexPaginated is the Codex 0.160.0 paginated profile and CodexPaginated162
+// the Codex 0.162.1 one. A bundle installs only into its own client version.
 const CodexPaginated = model.CodexPaginated
+const CodexPaginated162 = model.CodexPaginated162
 
 type Source = model.Source
 
